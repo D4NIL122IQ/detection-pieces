@@ -1,6 +1,4 @@
-/assets
-/BDD
-/.DS_Strore
-/.venv
-/*.pt
-/runs
+.venv
+/dataset
+/outputs
+/*/__pycache__
