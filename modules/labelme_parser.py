@@ -1,5 +1,12 @@
 from __future__ import annotations
 
+"""Lecture et conversion des annotations LabelMe.
+
+Le dataset fournit des annotations de type cercle au format JSON LabelMe.
+Ce module extrait les informations utiles et peut aussi reconstruire
+l'image embarquée dans le champ ``imageData``.
+"""
+
 import base64
 import json
 import math
@@ -13,6 +20,8 @@ import numpy as np
 
 @dataclass(frozen=True)
 class CircleAnnotation:
+    """Cercle annoté dans LabelMe."""
+
     label: str
     x: float
     y: float
@@ -20,6 +29,8 @@ class CircleAnnotation:
 
 
 def _circle_from_shape(shape: dict[str, Any]) -> CircleAnnotation | None:
+    """Convertit une forme LabelMe en cercle si son type est compatible."""
+
     if shape.get("shape_type") != "circle":
         return None
 
@@ -38,6 +49,8 @@ def _circle_from_shape(shape: dict[str, Any]) -> CircleAnnotation | None:
 
 
 def load_labelme_annotation(annotation_path: str | Path) -> dict[str, Any]:
+    """Charge un fichier LabelMe et ne conserve que les informations utiles au projet."""
+
     annotation_path = Path(annotation_path)
     with annotation_path.open("r", encoding="utf-8") as handle:
         data = json.load(handle)
@@ -59,6 +72,8 @@ def load_labelme_annotation(annotation_path: str | Path) -> dict[str, Any]:
 
 
 def decode_labelme_image(image_data: str | None) -> np.ndarray | None:
+    """Décode l'image embarquée en base64 dans une annotation LabelMe."""
+
     if not image_data:
         return None
 

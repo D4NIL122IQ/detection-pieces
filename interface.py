@@ -17,7 +17,7 @@ CANVAS_HEIGHT = 640
 class EuroVisionApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
-        self.root.title("Detection de pieces")
+        self.root.title("CoinScope - Detection de pieces")
         self.root.geometry("1360x860")
         self.root.minsize(1180, 760)
 
@@ -34,17 +34,19 @@ class EuroVisionApp:
         self._build_layout()
 
     def _build_layout(self) -> None:
-        self.root.configure(bg="#f4f0e6")
+        self.root.configure(bg="#eef4f1")
 
         style = ttk.Style()
         style.theme_use("clam")
-        style.configure("Root.TFrame", background="#f4f0e6")
-        style.configure("Panel.TFrame", background="#fbf8f1")
-        style.configure("Title.TLabel", background="#f4f0e6", foreground="#34261c", font=("Helvetica", 22, "bold"))
-        style.configure("Muted.TLabel", background="#f4f0e6", foreground="#6f6259", font=("Helvetica", 11))
-        style.configure("PanelTitle.TLabel", background="#fbf8f1", foreground="#34261c", font=("Helvetica", 13, "bold"))
-        style.configure("Body.TLabel", background="#fbf8f1", foreground="#34261c", font=("Helvetica", 11))
-        style.configure("Primary.TButton", font=("Helvetica", 11, "bold"))
+        style.configure("Root.TFrame", background="#eef4f1")
+        style.configure("Panel.TFrame", background="#fbfffd")
+        style.configure("Header.TFrame", background="#0f3d3e")
+        style.configure("Title.TLabel", background="#0f3d3e", foreground="#f4fbf8", font=("Avenir", 26, "bold"))
+        style.configure("Muted.TLabel", background="#0f3d3e", foreground="#b7d4cf", font=("Avenir", 11))
+        style.configure("PanelTitle.TLabel", background="#fbfffd", foreground="#0f3d3e", font=("Avenir", 13, "bold"))
+        style.configure("Body.TLabel", background="#fbfffd", foreground="#284445", font=("Avenir", 11))
+        style.configure("Primary.TButton", font=("Avenir", 11, "bold"))
+        style.configure("Accent.TButton", font=("Avenir", 11, "bold"))
 
         root_frame = ttk.Frame(self.root, style="Root.TFrame", padding=18)
         root_frame.pack(fill="both", expand=True)
@@ -52,16 +54,21 @@ class EuroVisionApp:
         root_frame.columnconfigure(1, weight=2)
         root_frame.rowconfigure(1, weight=1)
 
-        header = ttk.Frame(root_frame, style="Root.TFrame")
+        header = ttk.Frame(root_frame, style="Header.TFrame", padding=18)
         header.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 14))
         header.columnconfigure(0, weight=1)
 
-        ttk.Label(header, text="EuroVision", style="Title.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(header, text="CoinScope", style="Title.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Label(
             header,
-            text="Detection de pieces d'euros par transformee de Hough",
+            text="Interface locale pour tester la detection de pieces d'euros par transformee de Hough",
             style="Muted.TLabel",
         ).grid(row=1, column=0, sticky="w", pady=(4, 0))
+        ttk.Label(
+            header,
+            text="Version experimentation",
+            style="Muted.TLabel",
+        ).grid(row=0, column=1, sticky="e")
 
         viewer_panel = ttk.Frame(root_frame, style="Panel.TFrame", padding=14)
         viewer_panel.grid(row=1, column=0, sticky="nsew", padx=(0, 14))
@@ -73,27 +80,27 @@ class EuroVisionApp:
         for column in range(4):
             controls.columnconfigure(column, weight=1)
 
-        ttk.Button(controls, text="Ouvrir une image", command=self.open_image, style="Primary.TButton").grid(
+        ttk.Button(controls, text="Choisir une image", command=self.open_image, style="Primary.TButton").grid(
             row=0, column=0, sticky="ew", padx=(0, 8)
         )
-        ttk.Button(controls, text="Lancer la detection", command=self.run_detection).grid(
+        ttk.Button(controls, text="Analyser", command=self.run_detection, style="Accent.TButton").grid(
             row=0, column=1, sticky="ew", padx=4
         )
-        ttk.Button(controls, text="Revenir a l'original", command=self.show_original).grid(
+        ttk.Button(controls, text="Voir l'original", command=self.show_original).grid(
             row=0, column=2, sticky="ew", padx=4
         )
-        ttk.Button(controls, text="Enregistrer le resultat", command=self.save_result).grid(
+        ttk.Button(controls, text="Exporter l'image", command=self.save_result).grid(
             row=0, column=3, sticky="ew", padx=(8, 0)
         )
 
-        canvas_frame = tk.Frame(viewer_panel, bg="#e7dcc8", highlightthickness=0)
+        canvas_frame = tk.Frame(viewer_panel, bg="#d9ece7", highlightthickness=0)
         canvas_frame.grid(row=1, column=0, sticky="nsew")
 
         self.canvas = tk.Canvas(
             canvas_frame,
             width=CANVAS_WIDTH,
             height=CANVAS_HEIGHT,
-            bg="#d8ccb6",
+            bg="#cfe2db",
             bd=0,
             highlightthickness=0,
         )
@@ -103,9 +110,9 @@ class EuroVisionApp:
         self.canvas.create_text(
             CANVAS_WIDTH // 2,
             CANVAS_HEIGHT // 2,
-            text="Apercu de l'image",
-            fill="#5c4a3a",
-            font=("Helvetica", 20, "bold"),
+            text="Apercu en attente",
+            fill="#356363",
+            font=("Avenir", 20, "bold"),
             tags="placeholder",
         )
 
@@ -114,7 +121,7 @@ class EuroVisionApp:
         side_panel.columnconfigure(0, weight=1)
         side_panel.rowconfigure(3, weight=1)
 
-        ttk.Label(side_panel, text="Session", style="PanelTitle.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(side_panel, text="Session d'analyse", style="PanelTitle.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Label(side_panel, textvariable=self.image_info_var, style="Body.TLabel", wraplength=300).grid(
             row=1, column=0, sticky="ew", pady=(10, 6)
         )
@@ -122,7 +129,7 @@ class EuroVisionApp:
             row=2, column=0, sticky="w", pady=(0, 12)
         )
 
-        ttk.Label(side_panel, text="Details des cercles", style="PanelTitle.TLabel").grid(
+        ttk.Label(side_panel, text="Cercles detectes", style="PanelTitle.TLabel").grid(
             row=3, column=0, sticky="nw"
         )
 
@@ -130,10 +137,10 @@ class EuroVisionApp:
             side_panel,
             wrap="word",
             height=20,
-            bg="#fffdf8",
-            fg="#34261c",
+            bg="#f3faf7",
+            fg="#214243",
             relief="flat",
-            font=("Courier", 11),
+            font=("Menlo", 11),
             padx=10,
             pady=10,
         )
@@ -171,7 +178,7 @@ class EuroVisionApp:
         height, width = image.shape[:2]
         self.image_info_var.set(f"{self.current_path.name}\nResolution : {width} x {height}")
         self.count_var.set("Pieces detectees : 0")
-        self.status_var.set("Image chargee. Lance la detection quand tu veux.")
+        self.status_var.set("Image chargee. Clique sur Analyser pour lancer la detection.")
         self._set_details("Aucune detection pour l'instant.")
         self._show_bgr_image(self.original_bgr)
 
@@ -180,13 +187,13 @@ class EuroVisionApp:
             messagebox.showinfo("Aucune image", "Charge d'abord une image.")
             return
 
-        self.status_var.set("Detection en cours...")
+        self.status_var.set("Analyse en cours...")
         self.root.update_idletasks()
 
         self.detected_circles = detect_coins(self.original_bgr)
         self.annotated_bgr = draw_circles(self.original_bgr, self.detected_circles)
         self.count_var.set(f"Pieces detectees : {len(self.detected_circles)}")
-        self.status_var.set("Detection terminee.")
+        self.status_var.set("Analyse terminee.")
         self._set_details(self._format_circles(self.detected_circles))
         self._show_bgr_image(self.annotated_bgr)
 
@@ -202,12 +209,12 @@ class EuroVisionApp:
             messagebox.showinfo("Rien a enregistrer", "Lance d'abord la detection.")
             return
 
-        default_name = "resultat_detection.jpg"
+        default_name = "coinscope_resultat.jpg"
         if self.current_path is not None:
             default_name = f"{self.current_path.stem}_detected.jpg"
 
         target = filedialog.asksaveasfilename(
-            title="Enregistrer le resultat",
+            title="Exporter l'image annotee",
             defaultextension=".jpg",
             initialfile=default_name,
             filetypes=[
@@ -224,7 +231,7 @@ class EuroVisionApp:
             messagebox.showerror("Echec", f"Impossible d'enregistrer :\n{target}")
             return
 
-        self.status_var.set(f"Resultat enregistre dans {target}")
+        self.status_var.set(f"Resultat exporte dans {target}")
 
     def _refresh_canvas(self, _event: tk.Event) -> None:
         if self.annotated_bgr is not None:

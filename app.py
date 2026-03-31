@@ -1,5 +1,12 @@
 from __future__ import annotations
 
+"""Point d'entrée en ligne de commande du projet.
+
+Ce script permet soit :
+- de tester la détection sur une image unique ;
+- d'évaluer la détection sur tout le dataset annoté.
+"""
+
 import argparse
 from pathlib import Path
 
@@ -7,11 +14,13 @@ import cv2
 
 from metrique import accumulate_metrics
 from modules.chargement import build_dataset_index, load_sample_image
-from modules.labelme_parser import load_labelme_annotation
+from modules.labelme_parser import CircleAnnotation, load_labelme_annotation
 from modules.segmentation import detect_coins, draw_circles
 
 
 def run_single_image(image_path: Path, output_path: Path | None = None) -> None:
+    """Exécute la détection sur une seule image et affiche les résultats."""
+
     image = cv2.imread(str(image_path))
     if image is None:
         raise FileNotFoundError(f"Impossible de lire l'image: {image_path}")
@@ -34,6 +43,8 @@ def evaluate_dataset(
     output_dir: Path | None = None,
     limit: int | None = None,
 ) -> None:
+    """Évalue la détection sur tout ou partie du dataset."""
+
     samples, warnings = build_dataset_index(images_dir, annotations_dir)
     if limit is not None:
         samples = samples[:limit]
@@ -55,7 +66,7 @@ def evaluate_dataset(
 
         annotation = load_labelme_annotation(sample.annotation_path)
         predictions = detect_coins(image)
-        ground_truth = annotation["circles"]
+        ground_truth = rescale_annotations_to_image(annotation["circles"], annotation, image)
 
         all_predictions.append(predictions)
         all_annotations.append(ground_truth)
@@ -78,7 +89,45 @@ def evaluate_dataset(
     print(f"TP / FP / FN   : {metrics.true_positives} / {metrics.false_positives} / {metrics.false_negatives}")
 
 
+def rescale_annotations_to_image(
+    annotations: list[CircleAnnotation],
+    annotation_meta: dict,
+    image,
+) -> list[CircleAnnotation]:
+    """Remet les annotations à l'échelle de l'image réellement chargée.
+
+    Ce recalage est nécessaire lorsque les coordonnées stockées dans le JSON
+    proviennent d'une image de résolution différente de celle présente dans
+    ``dataset/images``.
+    """
+
+    source_width = annotation_meta.get("image_width")
+    source_height = annotation_meta.get("image_height")
+    if not source_width or not source_height:
+        return annotations
+
+    target_height, target_width = image.shape[:2]
+    scale_x = target_width / float(source_width)
+    scale_y = target_height / float(source_height)
+    radius_scale = (scale_x + scale_y) / 2.0
+
+    if abs(scale_x - 1.0) < 1e-6 and abs(scale_y - 1.0) < 1e-6:
+        return annotations
+
+    return [
+        CircleAnnotation(
+            label=circle.label,
+            x=circle.x * scale_x,
+            y=circle.y * scale_y,
+            radius=circle.radius * radius_scale,
+        )
+        for circle in annotations
+    ]
+
+
 def build_parser() -> argparse.ArgumentParser:
+    """Construit l'interface de ligne de commande."""
+
     parser = argparse.ArgumentParser(description="Detection de pieces d'euros par transformee de Hough.")
     parser.add_argument("--image", type=Path, help="Chemin vers une image unique a traiter.")
     parser.add_argument("--output", type=Path, help="Chemin de sortie pour une visualisation sur image unique.")
@@ -91,6 +140,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    """Route l'exécution vers le mode image unique ou évaluation dataset."""
+
     parser = build_parser()
     args = parser.parse_args()
 
