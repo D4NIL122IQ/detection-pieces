@@ -63,12 +63,16 @@ def resize_for_detection(image: np.ndarray, max_size: int = TAILLE_MAX) -> tuple
     return resized, scale
 
 
-def apply_clahe_bgr(image: np.ndarray) -> np.ndarray:
+def apply_clahe_bgr(
+    image: np.ndarray,
+    clip_limit: float = 2.5,
+    tile_grid_size: tuple[int, int] = (8, 8),
+) -> np.ndarray:
     """Améliore localement le contraste via CLAHE sur la luminance LAB."""
 
     lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
     l_channel, a_channel, b_channel = cv2.split(lab)
-    clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
+    clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_grid_size)
     l_channel = clahe.apply(l_channel)
     merged = cv2.merge((l_channel, a_channel, b_channel))
     return cv2.cvtColor(merged, cv2.COLOR_LAB2BGR)

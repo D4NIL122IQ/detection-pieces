@@ -9,7 +9,7 @@ Calcule precision, rappel et F1 par classe et globalement (micro/macro).
 
 from dataclasses import dataclass, field
 
-from modules.determination import ValeurPiece
+from modules.classification import ValeurPiece
 from modules.labelme_parser import CircleAnnotation
 from modules.segmentation import DetectedCircle
 

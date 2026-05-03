@@ -14,7 +14,7 @@ import cv2
 from app import rescale_annotations_to_image
 from metriqueVT import compute_valeur_metrics, print_valeur_metrics
 from modules.chargement import build_dataset_index, load_sample_image
-from modules.determination import classify_by_color_and_size
+from modules.classification import classify_by_color_and_size
 from modules.labelme_parser import load_labelme_annotation
 from modules.segmentation import detect_coins
 
