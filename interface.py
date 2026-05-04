@@ -86,7 +86,7 @@ class EuroVisionApp:
         ttk.Label(header, text="Détection de pièces", style="Title.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Label(
             header,
-            text="Comparaison des classifications HSV vs HLS",
+            text="Comparaison de la methode principale avec les variantes",
             style="Muted.TLabel",
         ).grid(row=1, column=0, sticky="w", pady=(4, 0))
 
@@ -150,14 +150,14 @@ class EuroVisionApp:
             row=2, column=0, sticky="w", pady=(0, 8)
         )
 
-        # Notebook (onglets HSV / HLS)
+        # Notebook (onglets methode principale / variantes)
         self.notebook = ttk.Notebook(side_panel)
         self.notebook.grid(row=3, column=0, sticky="nsew", pady=(4, 0))
         self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_change)
 
-        # Onglet HSV
+        # Onglet principal
         tab_hsv = ttk.Frame(self.notebook, padding=8)
-        self.notebook.add(tab_hsv, text="Analyse HSV")
+        self.notebook.add(tab_hsv, text="Analyse principale")
         tab_hsv.columnconfigure(0, weight=1)
         tab_hsv.rowconfigure(1, weight=1)
 
@@ -283,12 +283,12 @@ class EuroVisionApp:
         self.detected_circles = detect_coins(self.original_bgr)
         self.count_var.set(f"Pieces detectees : {len(self.detected_circles)}")
 
-        # Classification HSV
+        # Classification principale
         self.valuations_hsv = classify_by_color_and_size(self.detected_circles, self.original_bgr)
         annotated_hsv = draw_circles(self.original_bgr, self.detected_circles)
         self.annotated_bgr_hsv = self._draw_valuations(annotated_hsv, self.valuations_hsv)
         _, libelle_hsv = valeur_totale(self.valuations_hsv)
-        self.total_hsv_var.set(f"Total HSV : {libelle_hsv}" if self.valuations_hsv else "")
+        self.total_hsv_var.set(f"Total principal : {libelle_hsv}" if self.valuations_hsv else "")
         self._set_details(self.details_hsv, self._format_valuations_hsv(self.valuations_hsv))
 
         # Classification HLS

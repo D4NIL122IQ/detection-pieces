@@ -87,7 +87,10 @@ def preprocess_for_hough(image: np.ndarray) -> np.ndarray:
     return cv2.GaussianBlur(median, (BLUR_GAUSS, BLUR_GAUSS), 0)
 
 
-def _deduplicate_circles(circles: list[DetectedCircle]) -> list[DetectedCircle]:
+def _deduplicate_circles(
+    circles: list[DetectedCircle],
+    image_shape: tuple[int, int] | None = None,
+) -> list[DetectedCircle]:
     """Fusionne les détections redondantes produites par Hough.
 
     La transformée de Hough retourne parfois :
@@ -132,6 +135,32 @@ def _deduplicate_circles(circles: list[DetectedCircle]) -> list[DetectedCircle]:
         # Quand il y a déjà plusieurs pièces détectées, on supprime les très gros rayons
         # qui correspondent souvent à des faux positifs.
         deduplicated = [circle for circle in deduplicated if circle.radius <= max_reasonable_radius]
+
+    if image_shape is not None and deduplicated:
+        height, width = image_shape
+        max_dim = max(height, width)
+        sorted_by_radius = sorted(deduplicated, key=lambda item: item.radius, reverse=True)
+        largest = sorted_by_radius[0]
+        second_radius = sorted_by_radius[1].radius if len(sorted_by_radius) >= 2 else 0
+
+        is_dominant_large_circle = (
+            largest.radius >= max_dim * 0.22
+            and (second_radius == 0 or largest.radius >= second_radius * 1.55)
+        )
+        if is_dominant_large_circle:
+            filtered = [largest]
+            for circle in deduplicated:
+                if circle is largest:
+                    continue
+                center_distance = float(np.hypot(circle.x - largest.x, circle.y - largest.y))
+
+                # Gros plan sur une seule pièce : les petits cercles internes générés
+                # par les motifs de surface sont rejetés.
+                if center_distance < largest.radius * 0.72 and circle.radius < largest.radius * 0.78:
+                    continue
+
+                filtered.append(circle)
+            deduplicated = filtered
 
     return sorted(deduplicated, key=lambda item: (item.y, item.x))
 
@@ -215,7 +244,7 @@ def detect_coins(image: np.ndarray) -> list[DetectedCircle]:
         )
         for circle in detected
     ]
-    return _deduplicate_circles(detected)
+    return _deduplicate_circles(detected, image.shape[:2])
 
 
 def draw_circles(
