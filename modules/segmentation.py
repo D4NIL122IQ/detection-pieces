@@ -28,7 +28,7 @@ RAYON_MAX_RATIO = 0.30
 MIN_DIST_RATIO = 0.08
 FALLBACK_PARAM2 = 28
 FALLBACK_MIN_RADIUS_RATIO = 0.02
-FALLBACK_MAX_RADIUS_RATIO = 0.35
+FALLBACK_MAX_RADIUS_RATIO = 0.50
 
 
 @dataclass(frozen=True)
@@ -85,6 +85,47 @@ def preprocess_for_hough(image: np.ndarray) -> np.ndarray:
     gray = cv2.cvtColor(normalized, cv2.COLOR_BGR2GRAY)
     median = cv2.medianBlur(gray, BLUR_MEDIAN)
     return cv2.GaussianBlur(median, (BLUR_GAUSS, BLUR_GAUSS), 0)
+
+
+def _edge_score(gray: np.ndarray, circle: DetectedCircle) -> float:
+    """Mesure la force du gradient le long du périmètre du cercle détecté.
+
+    Un vrai bord de pièce a un gradient fort et continu sur son contour.
+    Les faux cercles (motifs, reliefs) ont un gradient faible ou partiel.
+    Retourne un score entre 0 (pas de bord) et 1 (bord net continu).
+    """
+    h, w = gray.shape[:2]
+    cx, cy, r = circle.x, circle.y, circle.radius
+    if r < 5:
+        return 0.0
+
+    # Échantillonner 72 points le long du périmètre (tous les 5°)
+    n_points = 72
+    angles = np.linspace(0, 2 * np.pi, n_points, endpoint=False)
+    px = (cx + r * np.cos(angles)).astype(int)
+    py = (cy + r * np.sin(angles)).astype(int)
+
+    # Garder les points dans l'image
+    valid = (px >= 1) & (px < w - 1) & (py >= 1) & (py < h - 1)
+    if valid.sum() < n_points * 0.5:
+        return 0.0
+
+    px, py = px[valid], py[valid]
+
+    # Gradient (Sobel) aux points du périmètre
+    grad_x = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
+    grad_y = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
+    grad_mag = np.sqrt(grad_x ** 2 + grad_y ** 2)
+
+    # Magnitude moyenne du gradient sur le périmètre
+    edge_values = grad_mag[py, px]
+    mean_edge = float(np.mean(edge_values))
+
+    # Normaliser par le gradient moyen global (pour être invariant au contraste)
+    global_mean = float(np.mean(grad_mag)) + 1e-6
+    score = mean_edge / (global_mean * 3.0)
+
+    return float(np.clip(score, 0.0, 1.0))
 
 
 def _deduplicate_circles(
@@ -195,6 +236,53 @@ def _run_hough(
     return detected
 
 
+def _detect_closeup_coin(gray: np.ndarray) -> DetectedCircle | None:
+    """Détecte une pièce en gros plan via contours + ajustement de cercle.
+
+    Utilisé quand la pièce occupe une grande partie de l'image et que
+    Hough ne peut pas la détecter (rayon trop grand).
+    Cherche le plus grand contour circulaire dans l'image.
+    """
+    h, w = gray.shape[:2]
+    min_dim = min(h, w)
+
+    blurred = cv2.GaussianBlur(gray, (15, 15), 3)
+    edges = cv2.Canny(blurred, 30, 80)
+
+    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return None
+
+    best_circle = None
+    best_area = 0
+
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        if area < (min_dim * 0.15) ** 2 * np.pi:
+            continue
+
+        # Ajuster un cercle minimum englobant
+        (cx, cy), radius = cv2.minEnclosingCircle(cnt)
+        if radius < min_dim * 0.25:
+            continue
+
+        # Vérifier la circularité : aire contour vs aire cercle
+        circle_area = np.pi * radius ** 2
+        circularity = area / circle_area if circle_area > 0 else 0
+        if circularity < 0.4:
+            continue
+
+        if area > best_area:
+            best_area = area
+            best_circle = DetectedCircle(
+                x=int(round(cx)),
+                y=int(round(cy)),
+                radius=int(round(radius)),
+            )
+
+    return best_circle
+
+
 def detect_coins(image: np.ndarray) -> list[DetectedCircle]:
     """Détecte les pièces présentes dans une image couleur.
 
@@ -203,7 +291,8 @@ def detect_coins(image: np.ndarray) -> list[DetectedCircle]:
     2. prétraitement ;
     3. passe Hough principale ;
     4. passe de secours plus permissive si rien n'a été trouvé ;
-    5. remise à l'échelle et nettoyage des doublons.
+    5. détection gros plan si beaucoup de cercles sans dominant ;
+    6. remise à l'échelle et nettoyage des doublons.
     """
 
     resized, scale = resize_for_detection(image)
@@ -218,8 +307,6 @@ def detect_coins(image: np.ndarray) -> list[DetectedCircle]:
     detected = _run_hough(prepared, DP, min_dist, PARAM2, min_radius, max_radius)
 
     if not detected:
-        # La seconde passe n'est lancée qu'en cas d'échec complet pour éviter
-        # de dégrader les cas simples qui fonctionnent déjà bien.
         fallback_min_radius = max(8, int(round(min_dim * FALLBACK_MIN_RADIUS_RATIO)))
         fallback_max_radius = max(fallback_min_radius + 2, int(round(min_dim * FALLBACK_MAX_RADIUS_RATIO)))
         fallback_min_dist = max(20, int(round(min_dim * 0.06)))
@@ -231,6 +318,33 @@ def detect_coins(image: np.ndarray) -> list[DetectedCircle]:
             fallback_min_radius,
             fallback_max_radius,
         )
+
+    # Détection de gros plan : si beaucoup de cercles sont tous concentrés
+    # dans une même zone, c'est probablement un gros plan d'une seule pièce
+    # dont les motifs internes créent des faux cercles.
+    if len(detected) >= 6:
+        xs = np.array([c.x for c in detected], dtype=float)
+        ys = np.array([c.y for c in detected], dtype=float)
+        radii = np.array([c.radius for c in detected], dtype=float)
+
+        # Centre de masse des détections
+        cx_mean, cy_mean = float(xs.mean()), float(ys.mean())
+
+        # Distance max d'un centre de cercle au barycentre
+        dists = np.sqrt((xs - cx_mean) ** 2 + (ys - cy_mean) ** 2)
+        max_dist = float(dists.max())
+
+        # Si tous les cercles sont contenus dans un rayon < 30% de l'image
+        # et qu'aucun cercle n'est dominant (rayon max < 25% image),
+        # c'est un gros plan → garder un seul cercle englobant
+        if max_dist < min_dim * 0.30 and float(radii.max()) < min_dim * 0.25:
+            # Le rayon englobant = distance max + rayon du cercle le plus éloigné
+            enclosing_r = max_dist + float(radii[int(np.argmax(dists))])
+            detected = [DetectedCircle(
+                x=int(round(cx_mean)),
+                y=int(round(cy_mean)),
+                radius=int(round(enclosing_r)),
+            )]
 
     if not detected:
         return []

@@ -19,6 +19,7 @@ import cv2
 import numpy as np
 
 from modules.segmentation import DetectedCircle, apply_clahe_bgr
+from modules.classification import _meilleure_combinaison, _fiabilite_taille
 
 DIAMETRES_MM: dict[str, float] = {
     "1c": 16.25, "2c": 18.75, "5c": 21.25,
@@ -324,16 +325,41 @@ def classify_filtres(
 
         radii_groupe = [float(circles[i].radius) for i in indices]
 
+        # Utiliser les ratios de diamètres réels pour la taille
+        candidats = _GROUPES[groupe]
+        indices_tries = sorted(indices, key=lambda i: circles[i].radius)
+        radii_tries = [float(circles[i].radius) for i in indices_tries]
+        combo, best_err = _meilleure_combinaison(radii_tries, candidats)
+        fiabilite = _fiabilite_taille(radii_tries, best_err)
+
         for i in indices:
             feat = all_features[i]
             r = float(circles[i].radius)
 
-            if groupe == "cuivre":
-                denom, conf_intra = _classify_intra_cuivre(feat, r, radii_groupe)
-            elif groupe == "or":
-                denom, conf_intra = _classify_intra_or(feat, r, radii_groupe)
-            else:
+            if groupe == "bimetallic":
                 denom, conf_intra = _classify_intra_bimetallic(feat, image_bgr, circles[i], radii_groupe)
+            else:
+                # Score couleur
+                if groupe == "cuivre":
+                    denom_couleur, conf_couleur = _classify_intra_cuivre(feat, r, radii_groupe)
+                else:
+                    denom_couleur, conf_couleur = _classify_intra_or(feat, r, radii_groupe)
+
+                # Combiner couleur + ratios de diamètres réels
+                pos = indices_tries.index(i)
+                if fiabilite >= 0.4 and pos < len(combo):
+                    denom_taille = combo[pos]
+                    # Si taille et couleur sont d'accord, haute confiance
+                    if denom_taille == denom_couleur:
+                        denom = denom_taille
+                        conf_intra = min(1.0, conf_couleur * (1.0 + fiabilite))
+                    else:
+                        # Taille domine quand fiabilité élevée
+                        denom = denom_taille if fiabilite > 0.6 else denom_couleur
+                        conf_intra = conf_couleur * 0.7
+                else:
+                    denom = denom_couleur
+                    conf_intra = conf_couleur
 
             conf_finale = round(confs_groupe[i] * conf_intra, 3)
             resultats.append((i, denom, conf_finale, groupe))

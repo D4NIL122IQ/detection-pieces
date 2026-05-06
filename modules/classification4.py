@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-"""Classification combinée : ensemble de HSV + HLS + détection anneau Canny.
+"""Classification combinée : ensemble de HSV + HLS + Filtres + détection anneau Canny.
 
-Combine les résultats de classification.py (HSV) et classification2.py (HLS)
-avec un vote pondéré par la confiance, plus un détecteur d'anneau interne
-basé sur Canny pour confirmer/infirmer le groupe bimétal.
+Combine les résultats de classification.py (HSV), classification2.py (HLS)
+et classification3.py (Filtres RGB) avec un vote pondéré par la confiance,
+plus un détecteur d'anneau interne basé sur Canny pour confirmer/infirmer
+le groupe bimétal. Inclut une correction de balance des blancs (Gray-World).
 """
 
 from dataclasses import dataclass
@@ -15,6 +16,7 @@ import numpy as np
 from modules.segmentation import DetectedCircle, apply_clahe_bgr
 from modules.classification import classify_by_color_and_size, ValeurPiece, VALEURS_CENTIMES
 from modules.classification2 import classify_hls, ValeurPieceHLS
+from modules.classification3 import classify_filtres, ValeurPieceFiltre
 
 
 @dataclass(frozen=True)
@@ -149,95 +151,81 @@ def _profil_radial_contraste(image_bgr: np.ndarray, circle: DetectedCircle) -> f
     return float(np.clip(max_diff / 25.0, 0.0, 1.0))
 
 
+def _correct_white_balance(image_bgr: np.ndarray) -> np.ndarray:
+    """Correction Gray-World : suppose que la moyenne de l'image est grise."""
+    result = image_bgr.astype(np.float32)
+    avg_b, avg_g, avg_r = cv2.mean(result)[:3]
+    avg_gray = (avg_b + avg_g + avg_r) / 3.0
+    if avg_gray < 1.0:
+        return image_bgr
+    result[:, :, 0] *= avg_gray / max(avg_b, 1.0)
+    result[:, :, 1] *= avg_gray / max(avg_g, 1.0)
+    result[:, :, 2] *= avg_gray / max(avg_r, 1.0)
+    return np.clip(result, 0, 255).astype(np.uint8)
+
+
 def classify_combine(
     circles: list[DetectedCircle],
     image_bgr: np.ndarray,
 ) -> list[ValeurPieceCombinee]:
-    """Classification par ensemble : HSV + HLS + détection anneau Canny."""
+    """Classification combinée spécialisée par groupe.
+
+    Stratégie :
+    - Déterminer le groupe de chaque pièce par vote majoritaire (HSV + Filtres)
+    - Cuivre (1c, 2c, 5c) → Filtres (meilleur sur ce groupe)
+    - Or (10c, 20c, 50c) et Bimétal (1e, 2e) → HSV avec égalisation
+    """
     if not circles:
         return []
 
-    # Obtenir les résultats des deux méthodes
+    # HSV (avec HistEq intégré) et Filtres
     results_hsv = classify_by_color_and_size(circles, image_bgr)
-    results_hls = classify_hls(circles, image_bgr)
+    results_filtres = classify_filtres(circles, image_bgr)
 
     n = len(circles)
     resultats = []
 
     for i in range(n):
         v_hsv = results_hsv[i] if i < len(results_hsv) else None
-        v_hls = results_hls[i] if i < len(results_hls) else None
+        v_filt = results_filtres[i] if i < len(results_filtres) else None
 
-        # Détection de l'anneau interne (indicateur bimétal)
-        score_anneau = _detecter_anneau_interne(image_bgr, circles[i])
-        score_profil = _profil_radial_contraste(image_bgr, circles[i])
-        score_bimetal_canny = 0.6 * score_anneau + 0.4 * score_profil
+        # Déterminer le groupe par vote
+        groupe_hsv = v_hsv.groupe_couleur if v_hsv else ""
+        groupe_filt = v_filt.groupe_couleur if v_filt else ""
 
-        # Collecter les votes
-        votes: dict[str, float] = {}
-
-        if v_hsv:
-            poids_hsv = v_hsv.confiance * 1.0
-            votes[v_hsv.denomination] = votes.get(v_hsv.denomination, 0.0) + poids_hsv
-
-        if v_hls:
-            poids_hls = v_hls.confiance * 0.9
-            votes[v_hls.denomination] = votes.get(v_hls.denomination, 0.0) + poids_hls
-
-        # Vote Canny : booste bimétal ou pénalise
-        if score_bimetal_canny > 0.5:
-            # Forte indication bimétal — booster 1e/2e
-            # Choisir entre 1e et 2e selon le meilleur vote existant
-            vote_1e = votes.get("1e", 0.0)
-            vote_2e = votes.get("2e", 0.0)
-            boost = score_bimetal_canny * 0.8
-            if vote_2e >= vote_1e:
-                votes["2e"] = votes.get("2e", 0.0) + boost
-            else:
-                votes["1e"] = votes.get("1e", 0.0) + boost
-        elif score_bimetal_canny < 0.25:
-            # Pas d'anneau → pénaliser bimétal
-            penalite = (0.25 - score_bimetal_canny) * 0.6
-            if "1e" in votes:
-                votes["1e"] = max(0.01, votes["1e"] - penalite)
-            if "2e" in votes:
-                votes["2e"] = max(0.01, votes["2e"] - penalite)
-
-        # Déterminer le gagnant
-        if not votes:
+        # Si les Filtres détectent cuivre → leur faire confiance
+        # Sinon → utiliser le HSV (meilleur sur or et bimétal)
+        if groupe_filt == "cuivre" and v_filt:
+            best_denom = v_filt.denomination
+            best_conf = v_filt.confiance
+            methode = "Filtres"
+        elif v_hsv:
+            best_denom = v_hsv.denomination
+            best_conf = v_hsv.confiance
+            methode = "HSV"
+        elif v_filt:
+            best_denom = v_filt.denomination
+            best_conf = v_filt.confiance
+            methode = "Filtres"
+        else:
             best_denom = "1e"
             best_conf = 0.1
-        else:
-            best_denom = max(votes, key=lambda d: votes[d])
-            total_votes = sum(votes.values())
-            best_conf = votes[best_denom] / total_votes if total_votes > 0 else 0.1
+            methode = "fallback"
 
-        # Déterminer la méthode dominante
-        methode = "ensemble"
-        if v_hsv and v_hls:
-            if v_hsv.denomination == v_hls.denomination == best_denom:
-                methode = "consensus"
-            elif v_hsv and v_hsv.denomination == best_denom:
-                methode = "HSV"
-            elif v_hls and v_hls.denomination == best_denom:
-                methode = "HLS"
-            if score_bimetal_canny > 0.5 and best_denom in ("1e", "2e"):
-                methode = "Canny+" + methode
-
-        groupe = ""
+        groupe_final = ""
         if best_denom in ("1c", "2c", "5c"):
-            groupe = "cuivre"
+            groupe_final = "cuivre"
         elif best_denom in ("10c", "20c", "50c"):
-            groupe = "or"
+            groupe_final = "or"
         elif best_denom in ("1e", "2e"):
-            groupe = "bimetallic"
+            groupe_final = "bimetallic"
 
         resultats.append(ValeurPieceCombinee(
             cercle=circles[i],
             denomination=best_denom,
             valeur_centimes=VALEURS_CENTIMES[best_denom],
             confiance=round(min(1.0, best_conf), 3),
-            groupe_couleur=groupe,
+            groupe_couleur=groupe_final,
             methode_dominante=methode,
         ))
 

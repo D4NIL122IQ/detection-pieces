@@ -431,6 +431,19 @@ def classify_with_reference(
     return resultats
 
 
+def _equalize_histogram(image_bgr: np.ndarray) -> np.ndarray:
+    """Égalisation d'histogramme sur le canal L (LAB).
+
+    Normalise la luminance globale pour que les images sombres et claires
+    aient une distribution de luminosité uniforme, améliorant la robustesse
+    de la classification couleur.
+    """
+    lab = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+    l = cv2.equalizeHist(l)
+    return cv2.cvtColor(cv2.merge([l, a, b]), cv2.COLOR_LAB2BGR)
+
+
 def classify_by_color_and_size(
     circles: list[DetectedCircle],
     image_bgr: np.ndarray,
@@ -438,7 +451,8 @@ def classify_by_color_and_size(
     if not circles:
         return []
 
-    descriptors = [_build_descriptor(image_bgr, c) for c in circles]
+    image_eq = _equalize_histogram(image_bgr)
+    descriptors = [_build_descriptor(image_eq, c) for c in circles]
 
     group_indices: dict[str, list[int]] = {"cuivre": [], "or": [], "bimetallic": []}
     for i, desc in enumerate(descriptors):
