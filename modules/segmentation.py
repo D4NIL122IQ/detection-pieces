@@ -28,7 +28,7 @@ RAYON_MAX_RATIO = 0.30
 MIN_DIST_RATIO = 0.08
 FALLBACK_PARAM2 = 28
 FALLBACK_MIN_RADIUS_RATIO = 0.02
-FALLBACK_MAX_RADIUS_RATIO = 0.50
+FALLBACK_MAX_RADIUS_RATIO = 0.35
 
 
 @dataclass(frozen=True)
@@ -334,11 +334,10 @@ def detect_coins(image: np.ndarray) -> list[DetectedCircle]:
         dists = np.sqrt((xs - cx_mean) ** 2 + (ys - cy_mean) ** 2)
         max_dist = float(dists.max())
 
-        # Si tous les cercles sont contenus dans un rayon < 30% de l'image
+        # Si tous les cercles sont concentrés dans une zone < 25% de l'image
         # et qu'aucun cercle n'est dominant (rayon max < 25% image),
         # c'est un gros plan → garder un seul cercle englobant
-        if max_dist < min_dim * 0.30 and float(radii.max()) < min_dim * 0.25:
-            # Le rayon englobant = distance max + rayon du cercle le plus éloigné
+        if max_dist < min_dim * 0.25 and float(radii.max()) < min_dim * 0.25:
             enclosing_r = max_dist + float(radii[int(np.argmax(dists))])
             detected = [DetectedCircle(
                 x=int(round(cx_mean)),
