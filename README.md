@@ -39,7 +39,15 @@ L'application pratique est simple — pointer une caméra vers un ensemble de pi
 
 ### Objectifs de performance
 
-L'objectif initial était d'atteindre **70 % de précision** sur la détection. La version actuelle dépasse cet objectif avec un **F1-score de 76.86 %**.
+L'objectif initial était d'atteindre **70 % de précision** sur la détection. La version actuelle dépasse largement cet objectif :
+
+| Tâche | Métrique | Train (199 img) | Test (119 img) |
+|---|---|---|---|
+| **Détection** | F1 | **82.64 %** | **83.21 %** |
+| **Détection** | Précision | 82.29 % | 84.86 % |
+| **Détection** | Rappel | 83.00 % | 81.62 % |
+| **Classification valeur (8 classes)** | F1 micro | 36.2 % | **37.2 %** |
+| **Classification valeur** | F1 macro | 36.1 % | **37.7 %** |
 
 ---
 
@@ -49,24 +57,37 @@ L'objectif initial était d'atteindre **70 % de précision** sur la détection. 
 Image d'entrée
       │
       ▼
-┌─────────────────────┐
-│  Prétraitement       │  Redimensionnement, CLAHE, flou médian, flou gaussien
-└─────────────────────┘
+┌──────────────────────────┐
+│  Prétraitement            │  Redimensionnement, CLAHE adaptatif,
+│  (segmentation.py)        │  flou médian + gaussien
+└──────────────────────────┘
       │
       ▼
-┌─────────────────────┐
-│  Détection           │  Transformée de Hough circulaire (HoughCircles)
-│  (segmentation.py)   │  + dédoublonnage géométrique
-└─────────────────────┘
+┌──────────────────────────┐
+│  Détection Hough          │  HoughCircles (2 passes : principale + fallback)
+│  (segmentation.py)        │  + détection gros plan + dédoublonnage géométrique
+└──────────────────────────┘
       │
-      ▼  Liste de cercles (x, y, rayon)
+      ▼  Liste de cercles candidats
       │
       ▼
-┌─────────────────────┐
-│  Classification      │  Analyse couleur HSV + ratios de taille
-│  (determination.py)  │  → groupe (cuivre / or nordique / bimétal)
-│                      │  → valeur précise (1¢ … 2€)
-└─────────────────────┘
+┌──────────────────────────┐
+│  Validation               │  4 scores : edge, métallicité, couverture,
+│  (validator.py)           │  circularité → vote 2/4
+│                           │  + NMS par IoU (suppression doublons)
+└──────────────────────────┘
+      │
+      ▼  Liste de cercles validés
+      │
+      ▼
+┌──────────────────────────┐
+│  Classification combinée  │  3 voteurs en parallèle :
+│  (classification4.py)     │   - HSV + taille (classification.py)
+│                           │   - Filtres RGB (classification3.py)
+│                           │   - Profil radial + K-means (bimétal)
+│                           │  → vote pondéré sur le groupe couleur
+│                           │  → cohérence inter-pièces (ratios)
+└──────────────────────────┘
       │
       ▼
 Résultat : liste (valeur, confiance) + total en centimes
@@ -78,34 +99,49 @@ Résultat : liste (valeur, confiance) + total en centimes
 
 ```
 detection-pieces/
-├── app.py                        # Point d'entrée CLI
+├── app.py                        # Point d'entrée CLI (détection)
+├── eval_valeurs.py               # Évaluation de la classification des valeurs
 ├── interface.py                  # Application graphique (Tkinter)
 ├── main.py                       # Wrapper simplifié
-├── metrique.py                   # Calcul des métriques de détection
-├── rename_bdd_annotations.py     # Outil de gestion du dataset
+├── metrique.py                   # Métriques de détection
+├── metriqueVT.py                 # Métriques de classification par classe
+├── optimize.py                   # Optimisation des paramètres
 ├── modules/
 │   ├── __init__.py
 │   ├── segmentation.py           # Détection des cercles (Hough)
-│   ├── determination.py          # Classification des valeurs
+│   ├── validator.py              # Validation + NMS par IoU
+│   ├── classification.py         # Classification HSV (couleur + taille)
+│   ├── classification2.py        # Variante HLS
+│   ├── classification3.py        # Classification par filtres RGB
+│   ├── classification4.py        # Vote combiné HSV + Filtres + bimétal
+│   ├── constants.py              # Constantes partagées (diamètres, groupes)
 │   ├── labelme_parser.py         # Lecture des annotations LabelMe
 │   └── chargement.py             # Chargement image / annotation
 └── dataset/
-    ├── images/                   # 200 images (img_001 … img_200)
+    ├── images/                   # 200 images + dataset test
+    │   └── test/                 # 119 images de test
     └── BDD/                      # 199 annotations LabelMe (JSON)
+        └── test/                 # 119 annotations test
 ```
 
 ### Rôle de chaque fichier
 
 | Fichier | Rôle |
 |---|---|
-| `segmentation.py` | Contient tout le pipeline de détection : prétraitement, appel Hough, filtrage des doublons |
-| `determination.py` | Analyse couleur + taille de chaque cercle détecté pour déterminer la valeur de la pièce |
-| `labelme_parser.py` | Parse les fichiers JSON au format LabelMe pour extraire les annotations de vérité terrain |
-| `chargement.py` | Associe chaque image à son annotation correspondante |
-| `metrique.py` | Calcule précision, rappel, F1 en comparant détections et annotations |
-| `app.py` | CLI : mode image unique ou évaluation complète du dataset |
-| `interface.py` | GUI Tkinter avec affichage des résultats superposés à l'image |
-| `rename_bdd_annotations.py` | Réaligne les annotations avec les images renommées via empreinte visuelle |
+| `segmentation.py` | Pipeline de détection : prétraitement adaptatif, Hough avec fallback, détection gros plan, dédoublonnage |
+| `validator.py` | Filtre les faux positifs via 4 scores (edge, métallicité, couverture, circularité) puis applique un NMS par IoU |
+| `classification.py` | Classification par HSV : balance des blancs Gray-World + CLAHE + assignation groupe + ratios de taille |
+| `classification2.py` | Variante en HLS (sigmoïde sur la teinte, frontière cuivre/or) |
+| `classification3.py` | Classification par ratios RGB normalisés (R/(R+G+B), etc.) |
+| `classification4.py` | **Méthode principale** : vote pondéré entre HSV + Filtres + score bimétal (profil radial + K-means k=2) + post-traitement de cohérence inter-pièces |
+| `constants.py` | Diamètres officiels, dénominations, groupes couleur |
+| `labelme_parser.py` | Parse les fichiers JSON LabelMe |
+| `chargement.py` | Associe image à son annotation correspondante |
+| `metrique.py` / `metriqueVT.py` | Calcul des métriques (détection / classification) |
+| `app.py` | CLI détection : mode image unique ou évaluation complète |
+| `eval_valeurs.py` | CLI évaluation des classifications de valeurs |
+| `interface.py` | GUI Tkinter avec résultats superposés à l'image |
+| `optimize.py` | Recherche des meilleurs paramètres par grid search |
 
 ---
 
@@ -113,8 +149,8 @@ detection-pieces/
 
 ### Composition
 
-- **200 images** au format JPEG, nommées `img_001` à `img_200`
-- **199 annotations** au format LabelMe (JSON), une par image (une image sans annotation)
+- **Train** : 200 images JPEG (`img_001` à `img_200`) + 199 annotations LabelMe
+- **Test** : 119 images additionnelles dans `dataset/images/test/` avec annotations dans `dataset/BDD/test/`
 - Images prises dans des conditions variées : différents fonds, éclairages, angles et densités de pièces
 
 ### Format d'annotation (LabelMe)
@@ -213,16 +249,32 @@ Si aucun cercle n'est détecté en première passe, une seconde passe est lancé
 
 Cela permet de traiter les images où les pièces sont très petites, très peu contrastées ou prises sous un angle inhabituel.
 
+### Détection gros plan
+
+Quand de nombreux petits cercles sont détectés mais concentrés dans une zone restreinte sans cercle dominant (typique d'une photo en gros plan d'une seule pièce où les motifs internes génèrent des faux cercles), un post-traitement les fusionne en **un seul cercle englobant**.
+
+### Validation et NMS
+
+Après Hough, chaque cercle est validé par 4 scores indépendants (`modules/validator.py`) :
+
+| Score | Description |
+|---|---|
+| `edge_score` | Force du gradient Sobel le long du périmètre (vrai bord de pièce → score élevé) |
+| `metallic_score` | Cohérence de l'intérieur avec un disque métallique (luminosité modérée, saturation faible) |
+| `coverage_score` | Proportion du disque effectivement dans l'image (rejette les pièces tronquées) |
+| `circularity_score` | Circularité 4π·aire/périmètre² du contour détecté par Canny dans la ROI |
+
+Un cercle est rejeté si au moins 2 des 4 critères échouent (**vote 2/4**).
+
+Un **NMS par IoU** est ensuite appliqué : pour chaque paire de cercles dont l'IoU dépasse 2 %, seul celui qui a le meilleur score composite est conservé. Cette étape supprime les doublons résiduels que le dédoublonnage géométrique manque (gain de ~+5 points de F1).
+
 ---
 
-## 6. Étape 2 — Classification de la valeur (determination)
+## 6. Étape 2 — Classification de la valeur
 
 ### Principe général
 
-Une fois les cercles détectés, chaque pièce doit être identifiée parmi les 8 valeurs possibles. L'approche est basée sur deux caractéristiques physiques des pièces :
-
-1. **La couleur** : les pièces d'euros sont fabriquées en trois types de matériaux distincts
-2. **La taille** : chaque valeur a un diamètre réglementé
+Une fois les cercles détectés et validés, chaque pièce doit être identifiée parmi 8 valeurs. Le module `classification4.py` orchestre une **classification par vote pondéré** combinant plusieurs classifieurs indépendants.
 
 ### Les trois groupes de couleur
 
@@ -230,32 +282,9 @@ Une fois les cercles détectés, chaque pièce doit être identifiée parmi les 
 |---|---|---|---|
 | **Cuivre** | 1¢, 2¢, 5¢ | Acier recouvert de cuivre | Rouge-brun, H ≈ 11-14 |
 | **Or nordique** | 10¢, 20¢, 50¢ | Alliage "Nordic Gold" | Doré, H ≈ 20-26 |
-| **Bimétal** | 1€, 2€ | Deux alliages (centre + couronne) | Faible saturation globale |
+| **Bimétal** | 1€, 2€ | Deux alliages (centre + couronne) | Contraste centre/bord |
 
-### Passe 1 : Assignation au groupe de couleur
-
-Pour chaque pièce détectée :
-1. La région circulaire est extraite et normalisée (64×64 pixels)
-2. L'image est convertie en **HSV** (Hue, Saturation, Value)
-3. Un **score de couleur** est calculé pour chaque groupe :
-
-**Pour Cuivre et Or nordique :**
-- Les pixels sont pondérés par leur saturation (pixels gris ignorés)
-- Un score sigmoïde est calculé autour de H = 17 (frontière cuivre/or)
-- Un score gaussien est ajouté centré sur la teinte cible du groupe
-- Un seuil adaptatif sur V (25 % de la médiane locale) filtre les pixels trop sombres
-
-**Pour Bimétal :**
-- Score basé sur la **faible saturation** : les pièces bimétal ont une apparence globalement grisée (argent dominant)
-- Calcul du pourcentage de pixels fortement saturés (signature cuivre/or absent)
-
-Le groupe retenu est celui avec le score le plus élevé.
-
-### Passe 2 : Sélection de la valeur dans le groupe
-
-Une fois le groupe connu, on détermine la valeur précise parmi les 2 ou 3 candidats en utilisant les **ratios de diamètre**.
-
-**Diamètres de référence réels (en mm) :**
+### Diamètres de référence
 
 | Valeur | Diamètre | Groupe |
 |---|---|---|
@@ -268,42 +297,98 @@ Une fois le groupe connu, on détermine la valeur précise parmi les 2 ou 3 cand
 | 1€ | 23.25 mm | Bimétal |
 | 2€ | 25.75 mm | Bimétal |
 
-L'algorithme trie les pièces détectées par rayon et les candidats par diamètre, puis cherche la combinaison qui **minimise l'erreur relative sur tous les ratios de diamètre** entre paires de pièces. Pour N ≤ 3 pièces, toutes les combinaisons sont testées.
+### Architecture : 3 voteurs
 
-### Cas particulier : 1€ vs 2€
+**Voteur 1 — HSV + taille** (`classification.py`)
+1. Balance des blancs Gray-World pour corriger la dominante couleur
+2. CLAHE sur le canal L de LAB (égalisation locale)
+3. Conversion HSV, scores par groupe :
+   - Cuivre/Or : score sigmoïde autour de H=17 + gaussien sur la teinte cible
+   - Bimétal : score sur la proportion de pixels à faible saturation
+4. Sélection de la valeur par minimisation de l'erreur sur les ratios de diamètre (test exhaustif pour N ≤ 3 pièces)
 
-Pour distinguer 1€ de 2€ lorsqu'une seule pièce bimétal est présente, l'algorithme analyse la distribution couleur **centre vs couronne** :
+**Voteur 2 — Filtres RGB** (`classification3.py`)
+- Ratios RGB normalisés invariants à l'éclairage : R/(R+G+B), G/(R+G+B), B/(R+G+B)
+- Comparaison aux signatures de référence de chaque groupe
+- Bénéficie d'un boost ×1.3 lors de la sélection de valeur dans le groupe cuivre
 
-- **1€** : centre en argent (acier) + couronne en or nordique
-- **2€** : centre en or nordique + couronne en argent (acier)
+**Voteur 3 — Score bimétal centre/bord**
+- **Profil radial** : trace la saturation HSV sur 20 anneaux concentriques de 0 à r, puis cherche le **saut maximal** entre deux moitiés du profil → un bimétal a une discontinuité abrupte ; un monométal a un profil lisse
+- **K-means k=2** sur les canaux a,b de LAB (chrominance, ignore luminance) : un bimétal présente deux clusters bien séparés
+- Fusion : `score = 0.8 × radial + 0.2 × kmeans`
+- Détermine aussi 1€ vs 2€ selon quelle zone est saturée
 
-En plus de l'analyse couleur, un bonus de taille est appliqué (2€ > 1€ en diamètre).
+### Vote sur le groupe couleur
 
-### Score de confiance
+Chaque voteur émet un vote pondéré par sa confiance :
 
-Chaque prédiction est accompagnée d'un **score de confiance** (0 à 1) qui reflète la certitude de la classification. Ce score peut être utilisé pour filtrer les prédictions douteuses.
+```python
+votes["cuivre"]     += conf_hsv         si HSV vote cuivre
+votes["or"]         += conf_filtres     si Filtres vote or
+votes["bimetallic"] += score_bimetal    si score_bimetal > 0.35
+votes["bimetallic"] *= 0.5              si score_bimetal < 0.15  (pénalité monométal)
+```
+
+Le groupe avec le plus de votes est élu.
+
+### Sélection de la valeur
+
+Parmi les classifieurs alignés avec le groupe élu, le candidat avec la meilleure confiance gagne. Pour le groupe bimétal élu avec `score_bimetal > 0.35`, la suggestion 1€/2€ du voteur 3 est ajoutée comme candidat.
+
+### Post-traitement : cohérence inter-pièces
+
+Après classification individuelle, pour chaque groupe contenant ≥ 2 pièces dans l'image :
+
+1. Trier les pièces par rayon croissant
+2. Énumérer toutes les assignations possibles de dénominations (monotones, avec répétition)
+3. Pour chaque assignation, calculer l'erreur = Σ |ratio_observé − ratio_théorique| sur les paires consécutives
+4. Garder l'assignation à erreur minimale si erreur < 0.30 et confiance moyenne < 0.75
+
+Cela corrige les classifications individuelles incohérentes en exploitant les contraintes physiques (les diamètres réels imposent des ratios précis entre pièces).
 
 ---
 
 ## 7. Évaluation des performances
 
-### Métriques
+### Détection des cercles
 
-| Métrique | Valeur |
-|---|---|
-| Précision | **70.33 %** |
-| Rappel | **84.73 %** |
-| F1-score | **76.86 %** |
+| Métrique | Train (199 img) | Test (119 img) |
+|---|---|---|
+| Précision | 82.29 % | **84.86 %** |
+| Rappel | 83.00 % | 81.62 % |
+| **F1** | **82.64 %** | **83.21 %** |
+| TP / FP / FN | 576 / 124 / 118 | 342 / 61 / 77 |
 
-Évaluation réalisée sur **199 images annotées**.
+### Classification de la valeur (8 classes)
+
+| Métrique | Train | Test |
+|---|---|---|
+| **F1 micro** | 36.2 % | **37.2 %** |
+| **F1 macro** | 36.1 % | **37.7 %** |
+| Précision | 36.0 % | 38.0 % |
+| Rappel | 36.3 % | 36.5 % |
+
+**Détail par classe (test)** :
+
+| Classe | TP | Précision | Rappel | F1 |
+|---|---|---|---|---|
+| 1¢ | 17 | 68.0 % | 37.8 % | **48.6 %** |
+| 2¢ | 8 | 53.3 % | 32.0 % | 40.0 % |
+| 5¢ | 9 | 32.1 % | 29.0 % | 30.5 % |
+| 10¢ | 17 | 30.4 % | 25.0 % | 27.4 % |
+| 20¢ | 26 | 44.8 % | 25.5 % | 32.5 % |
+| 50¢ | 23 | 35.4 % | 44.2 % | 39.3 % |
+| 1€ | 20 | 27.0 % | 45.5 % | 33.9 % |
+| 2€ | 33 | 40.2 % | 63.5 % | **49.3 %** |
 
 ### Définitions
 
 - **Précision** = TP / (TP + FP) : parmi les cercles détectés, combien correspondent vraiment à une pièce ?
 - **Rappel** = TP / (TP + FN) : parmi les vraies pièces, combien ont été détectées ?
 - **F1** = 2 × (précision × rappel) / (précision + rappel) : moyenne harmonique
+- **F1 micro** vs **macro** : micro pondère par classe selon le nombre d'instances ; macro fait une moyenne simple sur les classes
 
-### Critère de correspondance
+### Critère de correspondance (détection)
 
 Un cercle détecté est considéré comme **vrai positif** si :
 - Distance entre le centre détecté et le centre annoté < max(10px, 60 % du rayon annoté)
@@ -313,11 +398,9 @@ L'appariement est **greedy** : on associe en priorité le cercle détecté le pl
 
 ### Analyse
 
-Le **rappel (84.73 %)** est nettement supérieur à la **précision (70.33 %)**, ce qui signifie que :
-- Le système manque peu de pièces (bon rappel)
-- Mais génère un certain nombre de faux positifs (objets circulaires non monétaires détectés)
-
-Ce comportement est intentionnel : mieux vaut sur-détecter et filtrer ensuite que rater des pièces.
+- **Détection** : la précision est passée de 72 % à 82 % grâce au NMS par IoU, sans perte notable de rappel.
+- **Classification** : le score F1 a doublé par rapport à la version initiale (~18 % → 37 %), avec un gain particulièrement marqué sur les bimétaux (2€ à 49.3 %).
+- **Robustesse** : les performances sur la base test sont équivalentes voire supérieures à la base train → pas de sur-apprentissage.
 
 ---
 
@@ -377,16 +460,23 @@ Sans pièce de référence dans l'image et sans information sur la distance foca
 
 ### Améliorations possibles de la détection
 
-- **Filtrage par forme** : calculer le ratio d'aspect ou la circularité pour rejeter les faux positifs non circulaires
-- **Deep learning** : remplacer Hough par un détecteur d'objets (YOLOv8) pour être plus robuste aux fonds complexes
-- **Multi-scale detection** : traiter l'image à plusieurs résolutions pour mieux gérer les pièces très petites ou très grandes
+- **Multi-scale Hough** : traiter l'image à plusieurs résolutions pour récupérer les ~17 % de pièces non détectées
+- **Détecteur RANSAC sur contours** : alternative à Hough sur images très texturées
+- **Deep learning** : remplacer Hough par un détecteur d'objets (YOLOv8) pour être plus robuste
 
 ### Améliorations possibles de la classification
 
-- **Calibration automatique** : détecter une pièce connue dans l'image pour calculer l'échelle
-- **Descripteurs de texture** : analyser la texture (face/pile) pour une classification plus fiable
-- **Apprentissage supervisé** : entraîner un CNN sur un dataset de régions de pièces recadrées
-- **Gestion des bimétaux** : améliorer l'analyse centre/couronne pour mieux distinguer 1€ et 2€
+- **Calibration automatique** : détecter une pièce connue dans l'image pour calculer l'échelle réelle
+- **Descripteurs de texture** (LBP, GLCM) : exploiter la texture distinctive (étoiles de la couronne bimétal)
+- **Balance des blancs locale** par pièce plutôt que globale
+- **Apprentissage supervisé** : entraîner un CNN léger (MobileNet) sur le dataset → atteindrait probablement > 90 %
+
+### Plafond classique atteint
+
+Sans pièce de référence ni deep learning, le système est proche de son plafond théorique. Les limitations restantes sont structurelles :
+- Ambiguïté géométrique entre 5¢/20¢ et 50¢/2€ (tailles trop proches)
+- Images mono-pièce sans référence (impossible à calibrer)
+- Pièces usées dont la couleur ne distingue plus cuivre/or
 
 ### Extensions fonctionnelles
 
@@ -423,10 +513,24 @@ python app.py --image dataset/images/img_001.jpg
 python app.py --image dataset/images/img_001.jpg --output outputs/img_001_detected.jpg
 ```
 
-#### Évaluer sur tout le dataset
+#### Évaluer la détection sur tout le dataset
 
 ```bash
 python app.py --evaluate
+```
+
+#### Évaluer la détection sur la base test
+
+```bash
+python app.py --evaluate --images-dir dataset/images/test --annotations-dir dataset/BDD/test
+```
+
+#### Évaluer la classification des valeurs
+
+```bash
+python eval_valeurs.py                                              # train
+python eval_valeurs.py --images-dir dataset/images/test \
+                      --annotations-dir dataset/BDD/test            # test
 ```
 
 #### Évaluer sur N images avec sauvegarde des visualisations
@@ -441,18 +545,6 @@ python app.py --evaluate --limit 50 --vis-dir outputs/eval/
 python interface.py
 ```
 
-#### Vérifier le réalignement des annotations (sans modifier)
-
-```bash
-python rename_bdd_annotations.py --dry-run
-```
-
-#### Appliquer le réalignement
-
-```bash
-python rename_bdd_annotations.py
-```
-
 ---
 
 ## Résumé technique
@@ -461,10 +553,13 @@ python rename_bdd_annotations.py
 |---|---|
 | Langage | Python 3.9+ |
 | Bibliothèque principale | OpenCV (`cv2`) |
-| Détection | Transformée de Hough circulaire |
-| Prétraitement | CLAHE + flou médian + flou gaussien |
-| Classification | Analyse couleur HSV + ratios de diamètre |
+| Détection | HoughCircles + fallback + détection gros plan |
+| Validation | 4 scores (edge, métallicité, couverture, circularité) + NMS par IoU |
+| Prétraitement | CLAHE adaptatif selon exposition + flou médian + gaussien |
+| Classification | Vote pondéré : HSV + Filtres RGB + Profil radial bimétal + K-means |
+| Post-traitement | Cohérence inter-pièces par ratios de diamètre |
 | Annotation | Format LabelMe (JSON) |
 | Interface | Tkinter |
-| Dataset | 200 images, 199 annotations |
-| Performances | Précision 70.33 %, Rappel 84.73 %, F1 76.86 % |
+| Dataset | 200 images train + 119 images test |
+| **Performances détection (test)** | **P 84.86 %, R 81.62 %, F1 83.21 %** |
+| **Performances classification (test)** | **F1 micro 37.2 %, F1 macro 37.7 %** |
