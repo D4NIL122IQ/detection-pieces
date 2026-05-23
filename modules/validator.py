@@ -29,6 +29,7 @@ from modules.segmentation import DetectedCircle
 _EDGE_SCORE_MIN = 0.20       # gradient périmètre trop faible → pas un bord de pièce
 _METALLIC_SCORE_MIN = 0.28   # intérieur incohérent avec du métal
 _COVERAGE_MIN = 0.55         # moins de 55% du cercle dans l'image → tronqué/hors-cadre
+_CIRCULARITY_MIN = 0.45      # forme trop éloignée d'un cercle → faux positif
 
 
 def _coverage_score(circle: DetectedCircle, image_shape: tuple[int, int]) -> float:
@@ -59,12 +60,13 @@ def _coverage_score(circle: DetectedCircle, image_shape: tuple[int, int]) -> flo
     return float(np.clip(clipped_area / box_area, 0.0, 1.0))
 
 
-def _edge_score(gray: np.ndarray, circle: DetectedCircle) -> float:
+def _edge_score(grad_mag: np.ndarray, global_mean: float, circle: DetectedCircle) -> float:
     """Mesure la force du gradient le long du périmètre.
 
     Retourne un score entre 0 (pas de bord) et 1 (bord net et continu).
+    grad_mag et global_mean sont pré-calculés une seule fois pour toute l'image.
     """
-    h, w = gray.shape[:2]
+    h, w = grad_mag.shape[:2]
     cx, cy, r = circle.x, circle.y, circle.radius
     if r < 5:
         return 0.0
@@ -80,15 +82,65 @@ def _edge_score(gray: np.ndarray, circle: DetectedCircle) -> float:
 
     px, py = px[valid], py[valid]
 
-    grad_x = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
-    grad_y = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
-    grad_mag = np.sqrt(grad_x ** 2 + grad_y ** 2)
-
     edge_values = grad_mag[py, px]
     mean_edge = float(np.mean(edge_values))
-    global_mean = float(np.mean(grad_mag)) + 1e-6
 
     return float(np.clip(mean_edge / (global_mean * 3.0), 0.0, 1.0))
+
+
+def _circularity_score(gray: np.ndarray, circle: DetectedCircle) -> float:
+    """Mesure la circularité réelle du contour dans la zone du cercle détecté.
+
+    Cherche le contour dominant dans la ROI du cercle et calcule
+    4*pi*aire / périmètre². Un cercle parfait donne 1.0.
+    Retourne 1.0 si aucun contour n'est trouvé (bénéfice du doute).
+    """
+    h, w = gray.shape[:2]
+    cx, cy, r = circle.x, circle.y, circle.radius
+    if r < 5:
+        return 0.0
+
+    # ROI autour du cercle avec marge
+    margin = max(5, int(r * 0.15))
+    x1 = max(0, cx - r - margin)
+    y1 = max(0, cy - r - margin)
+    x2 = min(w, cx + r + margin)
+    y2 = min(h, cy + r + margin)
+
+    roi = gray[y1:y2, x1:x2]
+    if roi.size == 0:
+        return 1.0
+
+    # Canny pour trouver les contours
+    blurred = cv2.GaussianBlur(roi, (5, 5), 1.5)
+    edges = cv2.Canny(blurred, 40, 100)
+
+    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return 1.0
+
+    # Trouver le contour le plus proche du cercle détecté
+    lx, ly = cx - x1, cy - y1
+    best_circ = 1.0
+    best_match = False
+
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        perimeter = cv2.arcLength(cnt, True)
+        if perimeter < r * 0.5 or area < r * r * 0.3:
+            continue
+
+        # Vérifier que ce contour correspond au cercle détecté
+        (cnt_cx, cnt_cy), cnt_r = cv2.minEnclosingCircle(cnt)
+        dist = np.hypot(cnt_cx - lx, cnt_cy - ly)
+        if dist > r * 0.5 or abs(cnt_r - r) > r * 0.5:
+            continue
+
+        best_match = True
+        circularity = (4.0 * np.pi * area) / (perimeter * perimeter) if perimeter > 0 else 0.0
+        best_circ = min(best_circ, circularity)
+
+    return best_circ if best_match else 1.0
 
 
 def _metallic_score(image_bgr: np.ndarray, circle: DetectedCircle) -> float:
@@ -158,11 +210,12 @@ def validate_coins(
     min_edge: float = _EDGE_SCORE_MIN,
     min_metallic: float = _METALLIC_SCORE_MIN,
     min_coverage: float = _COVERAGE_MIN,
+    min_circularity: float = _CIRCULARITY_MIN,
     keep_all_if_few: int = 1,
 ) -> list[DetectedCircle]:
     """Filtre les faux positifs parmi les cercles détectés.
 
-    Pour chaque cercle, calcule trois scores indépendants et rejette le cercle
+    Pour chaque cercle, calcule quatre scores indépendants et rejette le cercle
     si deux d'entre eux sont sous leur seuil (vote majoritaire laxiste).
 
     Paramètres :
@@ -182,11 +235,18 @@ def validate_coins(
     clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
     gray_eq = clahe.apply(gray)
 
+    # Pré-calcul du gradient Sobel une seule fois pour tous les cercles
+    grad_x = cv2.Sobel(gray_eq, cv2.CV_64F, 1, 0, ksize=3)
+    grad_y = cv2.Sobel(gray_eq, cv2.CV_64F, 0, 1, ksize=3)
+    grad_mag = np.sqrt(grad_x ** 2 + grad_y ** 2)
+    global_mean = float(np.mean(grad_mag)) + 1e-6
+
     validated = []
     for circle in circles:
-        e_score = _edge_score(gray_eq, circle)
+        e_score = _edge_score(grad_mag, global_mean, circle)
         m_score = _metallic_score(image_bgr, circle)
         c_score = _coverage_score(circle, (h_img, w_img))
+        ci_score = _circularity_score(gray, circle)
 
         # Compter les critères échoués
         failures = 0
@@ -196,20 +256,58 @@ def validate_coins(
             failures += 1
         if c_score < min_coverage:
             failures += 1
+        if ci_score < min_circularity:
+            failures += 1
 
-        # Rejeté seulement si au moins 2 critères échouent (vote 2/3)
+        # Rejeté seulement si au moins 2 critères échouent (vote 2/4)
         if failures < 2:
             validated.append(circle)
 
-    # Sécurité : ne jamais tout rejeter — si on aurait tout rejeté, on garde le meilleur
+    def _composite(c: DetectedCircle) -> float:
+        return (
+            _edge_score(grad_mag, global_mean, c) +
+            _metallic_score(image_bgr, c) +
+            _coverage_score(c, (h_img, w_img)) +
+            _circularity_score(gray, c)
+        )
+
+    # Sécurité : ne jamais tout rejeter
     if not validated and circles:
-        # Garder le cercle avec le meilleur score composite
-        def _composite(c: DetectedCircle) -> float:
-            return (
-                _edge_score(gray_eq, c) +
-                _metallic_score(image_bgr, c) +
-                _coverage_score(c, (h_img, w_img))
-            )
         validated = [max(circles, key=_composite)]
 
+    # Dédoublonnage par IoU : si 2 cercles ont >65% d'IoU, garder le mieux scoré
+    validated = _dedupe_by_iou(validated, _composite, iou_threshold=0.02)
+
     return validated
+
+
+def _iou_disks(c1: DetectedCircle, c2: DetectedCircle) -> float:
+    """Calcule l'IoU entre deux disques."""
+    d = float(np.hypot(c1.x - c2.x, c1.y - c2.y))
+    r1, r2 = float(c1.radius), float(c2.radius)
+    if r1 <= 0 or r2 <= 0:
+        return 0.0
+    if d >= r1 + r2:
+        return 0.0
+    if d <= abs(r1 - r2):
+        # Un disque est entièrement dans l'autre
+        return (min(r1, r2) ** 2) / (max(r1, r2) ** 2)
+    # Aire d'intersection des 2 disques
+    a1 = r1 * r1 * np.arccos(np.clip((d * d + r1 * r1 - r2 * r2) / (2 * d * r1), -1, 1))
+    a2 = r2 * r2 * np.arccos(np.clip((d * d + r2 * r2 - r1 * r1) / (2 * d * r2), -1, 1))
+    s = 0.5 * np.sqrt(max(0.0, (-d + r1 + r2) * (d + r1 - r2) * (d - r1 + r2) * (d + r1 + r2)))
+    inter = a1 + a2 - s
+    union = np.pi * (r1 * r1 + r2 * r2) - inter
+    return float(inter / union) if union > 0 else 0.0
+
+
+def _dedupe_by_iou(circles, score_fn, iou_threshold: float = 0.65):
+    """Supprime les cercles redondants par IoU, garde celui avec le meilleur score."""
+    if len(circles) < 2:
+        return circles
+    sorted_circles = sorted(circles, key=score_fn, reverse=True)
+    kept = []
+    for c in sorted_circles:
+        if all(_iou_disks(c, k) < iou_threshold for k in kept):
+            kept.append(c)
+    return kept
