@@ -16,6 +16,7 @@ from metrique import accumulate_metrics
 from modules.chargement import build_dataset_index, load_sample_image
 from modules.labelme_parser import CircleAnnotation, load_labelme_annotation
 from modules.segmentation import detect_coins, draw_circles
+from modules.validator import validate_coins
 
 
 def run_single_image(image_path: Path, output_path: Path | None = None) -> None:
@@ -26,6 +27,7 @@ def run_single_image(image_path: Path, output_path: Path | None = None) -> None:
         raise FileNotFoundError(f"Impossible de lire l'image: {image_path}")
 
     predictions = detect_coins(image)
+    predictions = validate_coins(predictions, image)
     print(f"{image_path}: {len(predictions)} piece(s) detectee(s)")
     for index, circle in enumerate(predictions, start=1):
         print(f"  {index:02d}. x={circle.x}, y={circle.y}, r={circle.radius}")
@@ -66,6 +68,7 @@ def evaluate_dataset(
 
         annotation = load_labelme_annotation(sample.annotation_path)
         predictions = detect_coins(image)
+        predictions = validate_coins(predictions, image)
         ground_truth = rescale_annotations_to_image(annotation["circles"], annotation, image)
 
         all_predictions.append(predictions)

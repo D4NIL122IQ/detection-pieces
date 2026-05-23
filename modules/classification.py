@@ -6,36 +6,8 @@ from itertools import combinations
 import cv2
 import numpy as np
 
+from modules.constants import DIAMETRES_MM, VALEURS_CENTIMES, GROUPES as _GROUPES
 from modules.segmentation import DetectedCircle, apply_clahe_bgr
-
-
-DIAMETRES_MM: dict[str, float] = {
-    "1c": 16.25,
-    "2c": 18.75,
-    "5c": 21.25,
-    "10c": 19.75,
-    "20c": 22.25,
-    "50c": 24.25,
-    "1e": 23.25,
-    "2e": 25.75,
-}
-
-VALEURS_CENTIMES: dict[str, int] = {
-    "1c": 1,
-    "2c": 2,
-    "5c": 5,
-    "10c": 10,
-    "20c": 20,
-    "50c": 50,
-    "1e": 100,
-    "2e": 200,
-}
-
-_GROUPES: dict[str, list[str]] = {
-    "cuivre": ["1c", "2c", "5c"],
-    "or": ["10c", "20c", "50c"],
-    "bimetallic": ["1e", "2e"],
-}
 
 _INTRA_H_SIGMA = 4.5
 _INTRA_S_SIGMA = 24.0
@@ -160,7 +132,7 @@ def _cluster_type(h_mean: float, s_mean: float, a_mean: float, b_mean: float) ->
     b_dev = b_mean - 128.0
     chroma = float(np.hypot(a_dev, b_dev))
 
-    if s_mean < 42.0 or chroma < 10.0:
+    if s_mean < 45.0 or chroma < 11.0:
         return "neutral"
 
     goldness = b_dev - 0.65 * a_dev
@@ -277,6 +249,10 @@ def _build_descriptor(image_bgr: np.ndarray, circle: DetectedCircle) -> dict:
     ) / 2.0
     bimetal_score = max(score_1e, score_2e) * 0.7 + contrast_bi * 0.3
 
+    # Signal complémentaire : proportion de pixels à faible saturation
+    # Les bimétaux ont une part significative de zone argentée (S < 50)
+    low_sat_ratio = float(np.mean(hsv[:, 1].astype(float) < 50))
+
     if (
         bimetal_score > 0.56 and
         props_all["gold"] > 0.16 and
@@ -285,14 +261,14 @@ def _build_descriptor(image_bgr: np.ndarray, circle: DetectedCircle) -> dict:
         group = "bimetallic"
         group_conf = min(1.0, bimetal_score)
     else:
-        if props_all["copper"] > props_all["gold"] + 0.14:
+        if props_all["copper"] > props_all["gold"] + 0.10:
             group = "cuivre"
             group_conf = props_all["copper"]
-        elif props_all["gold"] > props_all["copper"] + 0.02:
+        elif props_all["gold"] > props_all["copper"] + 0.06:
             group = "or"
             group_conf = props_all["gold"]
         else:
-            group = "or" if h_dom >= 14.0 else "cuivre"
+            group = "or" if h_dom >= 15.5 else "cuivre"
             group_conf = max(props_all["copper"], props_all["gold"], 0.25)
 
     return {
@@ -406,6 +382,19 @@ def _score_couleur_intragroupe(desc: dict, groupe: str) -> dict[str, float]:
     return {d: v / total for d, v in scores.items()}
 
 
+def _correct_white_balance(image_bgr: np.ndarray) -> np.ndarray:
+    """Correction Gray-World : suppose que la moyenne de l'image est grise."""
+    result = image_bgr.astype(np.float32)
+    avg_b, avg_g, avg_r = cv2.mean(result)[:3]
+    avg_gray = (avg_b + avg_g + avg_r) / 3.0
+    if avg_gray < 1.0:
+        return image_bgr
+    result[:, :, 0] *= avg_gray / max(avg_b, 1.0)
+    result[:, :, 1] *= avg_gray / max(avg_g, 1.0)
+    result[:, :, 2] *= avg_gray / max(avg_r, 1.0)
+    return np.clip(result, 0, 255).astype(np.uint8)
+
+
 def _equalize_histogram(image_bgr: np.ndarray) -> np.ndarray:
     """Égalisation d'histogramme sur le canal L (LAB).
 
@@ -426,7 +415,8 @@ def classify_by_color_and_size(
     if not circles:
         return []
 
-    image_eq = _equalize_histogram(image_bgr)
+    image_wb = _correct_white_balance(image_bgr)
+    image_eq = _equalize_histogram(image_wb)
     descriptors = [_build_descriptor(image_eq, c) for c in circles]
 
     group_indices: dict[str, list[int]] = {"cuivre": [], "or": [], "bimetallic": []}
@@ -468,7 +458,7 @@ def classify_by_color_and_size(
         combo, best_err = _meilleure_combinaison(radii_sorted, candidats)
         fiabilite = _fiabilite_taille(radii_sorted, best_err)
 
-        use_size_as_primary = fiabilite >= 0.45 and len(indices_sorted) >= 2
+        use_size_as_primary = fiabilite >= 0.20 and len(indices_sorted) >= 2
 
         for pos, i in enumerate(indices_sorted):
             desc = descriptors[i]
@@ -491,7 +481,7 @@ def classify_by_color_and_size(
             if fiabilite > 0.0 and pos < len(combo):
                 denom_taille = combo[pos]
                 scores = dict(scores)
-                scores[denom_taille] = scores.get(denom_taille, 1e-6) * (1.0 + fiabilite * 3.2)
+                scores[denom_taille] = scores.get(denom_taille, 1e-6) * (1.0 + fiabilite * 5.0)
                 total = sum(scores.values())
                 scores = {d: v / total for d, v in scores.items()}
 
@@ -566,13 +556,5 @@ def classify_by_color_and_size(
     return resultats
 
 
-def valeur_totale(valuations: list[ValeurPiece]) -> tuple[int, str]:
-    total = sum(v.valeur_centimes for v in valuations)
-    euros, centimes = divmod(total, 100)
-    if euros > 0 and centimes > 0:
-        libelle = f"{euros}e{centimes:02d}"
-    elif euros > 0:
-        libelle = f"{euros}e"
-    else:
-        libelle = f"{total}c"
-    return total, libelle
+# Re-export pour compatibilité avec les imports existants
+from modules.constants import valeur_totale  # noqa: E402, F811

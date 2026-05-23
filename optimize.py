@@ -23,6 +23,7 @@ from typing import Any
 
 import modules.segmentation as _seg_mod
 import modules.classification as _det_mod
+import modules.classification2 as _det2_mod
 
 from app import rescale_annotations_to_image
 from metrique import accumulate_metrics, DetectionMetrics
@@ -93,8 +94,8 @@ def apply_params(params: dict[str, Any]) -> dict[str, Any]:
         "BLUR_GAUSS":     _seg_mod.BLUR_GAUSS,
         "DP":             _seg_mod.DP,
         "MIN_DIST_RATIO": _seg_mod.MIN_DIST_RATIO,
-        "H_FRONTIERE":    _det_mod._H_FRONTIERE,
-        "SIGMOID_PENTE":  _det_mod._SIGMOID_PENTE,
+        "H_FRONTIERE":    _det2_mod._H_FRONTIERE,
+        "SIGMOID_PENTE":  _det2_mod._SIGMOID_PENTE,
         "FIABILITE_K":    _det_mod._FIABILITE_K,
         "INTRA_H_SIGMA":  _det_mod._INTRA_H_SIGMA,
         "INTRA_S_SIGMA":  _det_mod._INTRA_S_SIGMA,
@@ -105,8 +106,8 @@ def apply_params(params: dict[str, Any]) -> dict[str, Any]:
     _seg_mod.BLUR_GAUSS      = params["BLUR_GAUSS"]
     _seg_mod.DP              = params["DP"]
     _seg_mod.MIN_DIST_RATIO  = params["MIN_DIST_RATIO"]
-    _det_mod._H_FRONTIERE    = params["H_FRONTIERE"]
-    _det_mod._SIGMOID_PENTE  = params["SIGMOID_PENTE"]
+    _det2_mod._H_FRONTIERE    = params["H_FRONTIERE"]
+    _det2_mod._SIGMOID_PENTE  = params["SIGMOID_PENTE"]
     _det_mod._FIABILITE_K    = params["FIABILITE_K"]
     _det_mod._INTRA_H_SIGMA  = params["INTRA_H_SIGMA"]
     _det_mod._INTRA_S_SIGMA  = params["INTRA_S_SIGMA"]
@@ -121,8 +122,8 @@ def restore_params(originals: dict[str, Any]) -> None:
     _seg_mod.BLUR_GAUSS      = originals["BLUR_GAUSS"]
     _seg_mod.DP              = originals["DP"]
     _seg_mod.MIN_DIST_RATIO  = originals["MIN_DIST_RATIO"]
-    _det_mod._H_FRONTIERE    = originals["H_FRONTIERE"]
-    _det_mod._SIGMOID_PENTE  = originals["SIGMOID_PENTE"]
+    _det2_mod._H_FRONTIERE    = originals["H_FRONTIERE"]
+    _det2_mod._SIGMOID_PENTE  = originals["SIGMOID_PENTE"]
     _det_mod._FIABILITE_K    = originals["FIABILITE_K"]
     _det_mod._INTRA_H_SIGMA  = originals["INTRA_H_SIGMA"]
     _det_mod._INTRA_S_SIGMA  = originals["INTRA_S_SIGMA"]

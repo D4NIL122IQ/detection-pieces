@@ -11,25 +11,8 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
+from modules.constants import DIAMETRES_MM, VALEURS_CENTIMES, GROUPES as _GROUPES
 from modules.segmentation import DetectedCircle, apply_clahe_bgr
-
-DIAMETRES_MM: dict[str, float] = {
-    "1c": 16.25, "2c": 18.75, "5c": 21.25,
-    "10c": 19.75, "20c": 22.25, "50c": 24.25,
-    "1e": 23.25, "2e": 25.75,
-}
-
-VALEURS_CENTIMES: dict[str, int] = {
-    "1c": 1, "2c": 2, "5c": 5,
-    "10c": 10, "20c": 20, "50c": 50,
-    "1e": 100, "2e": 200,
-}
-
-_GROUPES: dict[str, list[str]] = {
-    "cuivre": ["1c", "2c", "5c"],
-    "or": ["10c", "20c", "50c"],
-    "bimetallic": ["1e", "2e"],
-}
 
 # --- Seuils HLS pour chaque groupe ---
 # OpenCV HLS : H [0,180], L [0,255], S [0,255]
@@ -399,13 +382,4 @@ def classify_hls(
     return resultats
 
 
-def valeur_totale_hls(valuations: list[ValeurPieceHLS]) -> tuple[int, str]:
-    total = sum(v.valeur_centimes for v in valuations)
-    euros, centimes = divmod(total, 100)
-    if euros > 0 and centimes > 0:
-        libelle = f"{euros}e{centimes:02d}"
-    elif euros > 0:
-        libelle = f"{euros}e"
-    else:
-        libelle = f"{total}c"
-    return total, libelle
+from modules.constants import valeur_totale as valeur_totale_hls  # noqa: E402, F811
