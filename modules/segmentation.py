@@ -78,54 +78,32 @@ def apply_clahe_bgr(
     return cv2.cvtColor(merged, cv2.COLOR_LAB2BGR)
 
 
-def preprocess_for_hough(image: np.ndarray) -> np.ndarray:
-    """Prépare l'image pour Hough en produisant une image en niveaux de gris lissée."""
+def _adaptive_clahe_clip(image: np.ndarray) -> float:
+    """Choisit le clip limit CLAHE selon l'exposition de l'image.
 
-    normalized = apply_clahe_bgr(image)
+    - Image sous-exposée (sombre) : clip élevé pour révéler les contours.
+    - Image surexposée (claire) : clip faible pour ne pas saturer.
+    - Exposition normale : clip standard.
+    """
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    mean_brightness = float(np.mean(gray))
+    if mean_brightness < 70:
+        return 4.0   # sous-exposée → contraste agressif
+    if mean_brightness > 190:
+        return 1.2   # surexposée → contraste doux
+    return 2.5       # normal
+
+
+def preprocess_for_hough(image: np.ndarray) -> np.ndarray:
+    """Prépare l'image pour Hough en produisant une image en niveaux de gris lissée.
+
+    Le clip CLAHE est adapté automatiquement à l'exposition de l'image.
+    """
+    clip = _adaptive_clahe_clip(image)
+    normalized = apply_clahe_bgr(image, clip_limit=clip)
     gray = cv2.cvtColor(normalized, cv2.COLOR_BGR2GRAY)
     median = cv2.medianBlur(gray, BLUR_MEDIAN)
     return cv2.GaussianBlur(median, (BLUR_GAUSS, BLUR_GAUSS), 0)
-
-
-def _edge_score(gray: np.ndarray, circle: DetectedCircle) -> float:
-    """Mesure la force du gradient le long du périmètre du cercle détecté.
-
-    Un vrai bord de pièce a un gradient fort et continu sur son contour.
-    Les faux cercles (motifs, reliefs) ont un gradient faible ou partiel.
-    Retourne un score entre 0 (pas de bord) et 1 (bord net continu).
-    """
-    h, w = gray.shape[:2]
-    cx, cy, r = circle.x, circle.y, circle.radius
-    if r < 5:
-        return 0.0
-
-    # Échantillonner 72 points le long du périmètre (tous les 5°)
-    n_points = 72
-    angles = np.linspace(0, 2 * np.pi, n_points, endpoint=False)
-    px = (cx + r * np.cos(angles)).astype(int)
-    py = (cy + r * np.sin(angles)).astype(int)
-
-    # Garder les points dans l'image
-    valid = (px >= 1) & (px < w - 1) & (py >= 1) & (py < h - 1)
-    if valid.sum() < n_points * 0.5:
-        return 0.0
-
-    px, py = px[valid], py[valid]
-
-    # Gradient (Sobel) aux points du périmètre
-    grad_x = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
-    grad_y = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
-    grad_mag = np.sqrt(grad_x ** 2 + grad_y ** 2)
-
-    # Magnitude moyenne du gradient sur le périmètre
-    edge_values = grad_mag[py, px]
-    mean_edge = float(np.mean(edge_values))
-
-    # Normaliser par le gradient moyen global (pour être invariant au contraste)
-    global_mean = float(np.mean(grad_mag)) + 1e-6
-    score = mean_edge / (global_mean * 3.0)
-
-    return float(np.clip(score, 0.0, 1.0))
 
 
 def _deduplicate_circles(
@@ -234,53 +212,6 @@ def _run_hough(
     for x, y, radius in np.round(circles[0]).astype(int):
         detected.append(DetectedCircle(x=int(x), y=int(y), radius=int(radius)))
     return detected
-
-
-def _detect_closeup_coin(gray: np.ndarray) -> DetectedCircle | None:
-    """Détecte une pièce en gros plan via contours + ajustement de cercle.
-
-    Utilisé quand la pièce occupe une grande partie de l'image et que
-    Hough ne peut pas la détecter (rayon trop grand).
-    Cherche le plus grand contour circulaire dans l'image.
-    """
-    h, w = gray.shape[:2]
-    min_dim = min(h, w)
-
-    blurred = cv2.GaussianBlur(gray, (15, 15), 3)
-    edges = cv2.Canny(blurred, 30, 80)
-
-    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if not contours:
-        return None
-
-    best_circle = None
-    best_area = 0
-
-    for cnt in contours:
-        area = cv2.contourArea(cnt)
-        if area < (min_dim * 0.15) ** 2 * np.pi:
-            continue
-
-        # Ajuster un cercle minimum englobant
-        (cx, cy), radius = cv2.minEnclosingCircle(cnt)
-        if radius < min_dim * 0.25:
-            continue
-
-        # Vérifier la circularité : aire contour vs aire cercle
-        circle_area = np.pi * radius ** 2
-        circularity = area / circle_area if circle_area > 0 else 0
-        if circularity < 0.4:
-            continue
-
-        if area > best_area:
-            best_area = area
-            best_circle = DetectedCircle(
-                x=int(round(cx)),
-                y=int(round(cy)),
-                radius=int(round(radius)),
-            )
-
-    return best_circle
 
 
 def detect_coins(image: np.ndarray) -> list[DetectedCircle]:

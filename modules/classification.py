@@ -37,9 +37,6 @@ _GROUPES: dict[str, list[str]] = {
     "bimetallic": ["1e", "2e"],
 }
 
-_DENOMINATIONS = list(DIAMETRES_MM.keys())
-_DIAMS = np.array([DIAMETRES_MM[d] for d in _DENOMINATIONS], dtype=float)
-
 _INTRA_H_SIGMA = 4.5
 _INTRA_S_SIGMA = 24.0
 _FIABILITE_K = 8.0
@@ -76,6 +73,37 @@ def _weighted_circular_mean(h: np.ndarray, weights: np.ndarray) -> float:
 
 def _gauss(x: float, mean: float, sigma: float) -> float:
     return float(np.exp(-0.5 * ((x - mean) / sigma) ** 2))
+
+
+def _lbp_variance(image_bgr: np.ndarray, circle: DetectedCircle) -> float:
+    """LBP 8-voisin sur l'intérieur de la pièce (70% du rayon).
+
+    Capture les différences de texture entre dénominations :
+    pièces plus grandes ont généralement des gravures plus complexes.
+    Retourne la variance des codes LBP (haut = plus texturé).
+    """
+    cx, cy, r = circle.x, circle.y, circle.radius
+    r_inner = max(1, int(r * 0.70))
+    x1 = max(0, cx - r_inner)
+    y1 = max(0, cy - r_inner)
+    x2 = min(image_bgr.shape[1], cx + r_inner)
+    y2 = min(image_bgr.shape[0], cy + r_inner)
+    roi = image_bgr[y1:y2, x1:x2]
+    if roi.size == 0:
+        return 0.0
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    if gray.shape[0] < 3 or gray.shape[1] < 3:
+        return 0.0
+    center = gray[1:-1, 1:-1].astype(np.int32)
+    neighbors = [
+        gray[0:-2, 0:-2], gray[0:-2, 1:-1], gray[0:-2, 2:],
+        gray[1:-1, 2:],   gray[2:, 2:],     gray[2:, 1:-1],
+        gray[2:, 0:-2],   gray[1:-1, 0:-2],
+    ]
+    lbp = np.zeros_like(center, dtype=np.uint8)
+    for i, nb in enumerate(neighbors):
+        lbp |= ((nb.astype(np.int32) >= center).astype(np.uint8) << i)
+    return float(np.var(lbp))
 
 
 def _extract_coin_samples(image_bgr: np.ndarray, circle: DetectedCircle, ratio_ext: float = 0.88) -> dict:
@@ -162,6 +190,7 @@ def _build_descriptor(image_bgr: np.ndarray, circle: DetectedCircle) -> dict:
             "score_2e": 0.5,
             "h_dom": 20.0,
             "s_dom": 60.0,
+            "lbp_var": 0.0,
             "type_props": {"copper": 0.0, "gold": 0.0, "neutral": 1.0},
             "zone_props": {
                 "center": {"copper": 0.0, "gold": 0.0, "neutral": 1.0},
@@ -273,6 +302,7 @@ def _build_descriptor(image_bgr: np.ndarray, circle: DetectedCircle) -> dict:
         "score_2e": float(score_2e),
         "h_dom": float(h_dom),
         "s_dom": float(s_dom),
+        "lbp_var": _lbp_variance(image_bgr, circle),
         "type_props": props_all,
         "zone_props": {"center": props_center, "ring": props_ring},
     }
@@ -358,6 +388,11 @@ def _score_couleur_intragroupe(desc: dict, groupe: str) -> dict[str, float]:
         for d in denoms:
             score = _gauss(h, _CUIVRE_H_CENTERS[d], _INTRA_H_SIGMA) * _gauss(s, _CUIVRE_S_CENTERS[d], _INTRA_S_SIGMA)
             scores[d] = max(score, 1e-6)
+        # LBP : surface plus texturée → pièce plus grande (5c > 2c > 1c)
+        lbp_var = desc.get("lbp_var", 0.0)
+        lbp_rank = float(np.clip(lbp_var / 3000.0, 0.0, 1.0))
+        scores["5c"] *= (1.0 + 0.40 * lbp_rank)
+        scores["1c"] *= (1.0 + 0.40 * (1.0 - lbp_rank))
     elif groupe == "or":
         denoms = ["10c", "20c", "50c"]
         scores = {}
@@ -369,66 +404,6 @@ def _score_couleur_intragroupe(desc: dict, groupe: str) -> dict[str, float]:
 
     total = sum(scores.values())
     return {d: v / total for d, v in scores.items()}
-
-
-def classify_by_relative_size(circles: list[DetectedCircle]) -> list[ValeurPiece]:
-    if not circles:
-        return []
-
-    radii = np.array([c.radius for c in circles], dtype=float)
-    radii_norm = radii / radii.min()
-    min_d = min(DIAMETRES_MM.values())
-    ratios = np.array([DIAMETRES_MM[d] / min_d for d in _DENOMINATIONS])
-    tol = 0.15
-
-    resultats = []
-    for circle, r_norm in zip(circles, radii_norm):
-        distances = np.abs(ratios - r_norm)
-        idx = int(np.argmin(distances))
-        denom = _DENOMINATIONS[idx]
-        conf = max(0.0, 1.0 - float(distances[idx]) / tol)
-        resultats.append(
-            ValeurPiece(
-                cercle=circle,
-                denomination=denom,
-                valeur_centimes=VALEURS_CENTIMES[denom],
-                confiance=round(conf, 3),
-            )
-        )
-    return resultats
-
-
-def classify_with_reference(
-    circles: list[DetectedCircle],
-    cercle_reference: DetectedCircle,
-    denomination_reference: str,
-) -> list[ValeurPiece]:
-    if not circles:
-        return []
-    if denomination_reference not in DIAMETRES_MM:
-        raise KeyError(f"Dénomination inconnue : {denomination_reference!r}.")
-    if cercle_reference.radius <= 0:
-        raise ValueError("Rayon de référence nul.")
-
-    mm_px = DIAMETRES_MM[denomination_reference] / (2 * cercle_reference.radius)
-    tol_mm = 1.5
-
-    resultats = []
-    for circle in circles:
-        diam = 2 * circle.radius * mm_px
-        distances = np.abs(_DIAMS - diam)
-        idx = int(np.argmin(distances))
-        denom = _DENOMINATIONS[idx]
-        conf = max(0.0, 1.0 - float(distances[idx]) / tol_mm)
-        resultats.append(
-            ValeurPiece(
-                cercle=circle,
-                denomination=denom,
-                valeur_centimes=VALEURS_CENTIMES[denom],
-                confiance=round(conf, 3),
-            )
-        )
-    return resultats
 
 
 def _equalize_histogram(image_bgr: np.ndarray) -> np.ndarray:
@@ -553,6 +528,40 @@ def classify_by_color_and_size(
                 groupe_couleur=groupe,
             )
         )
+
+    # --- Patch 3 : Calibration intra-groupe ---
+    # Si une pièce d'un groupe a une confiance élevée, l'utiliser comme
+    # référence absolue de taille pour affiner les autres pièces du même groupe.
+    if len(resultats) >= 2:
+        for groupe, candidats in _GROUPES.items():
+            indices_g = [i for i, r in enumerate(resultats) if r.groupe_couleur == groupe]
+            if len(indices_g) < 2:
+                continue
+            best_i = max(indices_g, key=lambda i: resultats[i].confiance)
+            ref = resultats[best_i]
+            if ref.confiance < 0.65 or ref.cercle.radius <= 0:
+                continue
+            mm_px = DIAMETRES_MM[ref.denomination] / (2.0 * ref.cercle.radius)
+            tol_mm = 1.8
+            for i in indices_g:
+                if i == best_i:
+                    continue
+                diam_mm = 2.0 * circles[i].radius * mm_px
+                distances = {d: abs(DIAMETRES_MM[d] - diam_mm) for d in candidats}
+                cal_denom = min(distances, key=distances.get)
+                cal_conf = round(
+                    min(1.0, max(0.0, 1.0 - distances[cal_denom] / tol_mm) * ref.confiance * 0.85),
+                    3,
+                )
+                if cal_conf > resultats[i].confiance:
+                    orig = resultats[i]
+                    resultats[i] = ValeurPiece(
+                        cercle=orig.cercle,
+                        denomination=cal_denom,
+                        valeur_centimes=VALEURS_CENTIMES[cal_denom],
+                        confiance=cal_conf,
+                        groupe_couleur=orig.groupe_couleur,
+                    )
 
     return resultats
 

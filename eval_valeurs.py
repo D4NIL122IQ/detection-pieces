@@ -15,14 +15,17 @@ from app import rescale_annotations_to_image
 from metriqueVT import compute_valeur_metrics, print_valeur_metrics
 from modules.chargement import build_dataset_index, load_sample_image
 from modules.classification import classify_by_color_and_size
+from modules.classification4 import classify_combine
 from modules.labelme_parser import load_labelme_annotation
 from modules.segmentation import detect_coins
+from modules.validator import validate_coins
 
 
 def evaluate(
     images_dir: Path,
     annotations_dir: Path,
     limit: int | None = None,
+    method: str = "combine",
 ) -> None:
     samples, warnings = build_dataset_index(images_dir, annotations_dir)
     if limit is not None:
@@ -52,7 +55,11 @@ def evaluate(
         )
 
         detected = detect_coins(image)
-        valuations = classify_by_color_and_size(detected, image)
+        detected = validate_coins(detected, image)
+        if method == "hsv":
+            valuations = classify_by_color_and_size(detected, image)
+        else:
+            valuations = classify_combine(detected, image)
 
         all_predictions.append(valuations)
         all_annotations.append(gt_circles)
@@ -79,8 +86,12 @@ def main() -> None:
         "--limit", type=int, default=None,
         help="Nombre max d'images a evaluer",
     )
+    parser.add_argument(
+        "--method", choices=["hsv", "combine"], default="combine",
+        help="Methode de classification (default: combine)",
+    )
     args = parser.parse_args()
-    evaluate(args.images_dir, args.annotations_dir, args.limit)
+    evaluate(args.images_dir, args.annotations_dir, args.limit, args.method)
 
 
 if __name__ == "__main__":

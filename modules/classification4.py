@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-"""Classification combinée : ensemble de HSV + HLS + Filtres + détection anneau Canny.
+"""Classification combinée : ensemble de HSV + Filtres.
 
-Combine les résultats de classification.py (HSV), classification2.py (HLS)
-et classification3.py (Filtres RGB) avec un vote pondéré par la confiance,
-plus un détecteur d'anneau interne basé sur Canny pour confirmer/infirmer
-le groupe bimétal. Inclut une correction de balance des blancs (Gray-World).
+Combine les résultats de classification.py (HSV) et classification3.py (Filtres RGB)
+avec sélection par confiance. Inclut une correction de balance des blancs (Gray-World).
 """
 
 from dataclasses import dataclass
@@ -13,10 +11,9 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
-from modules.segmentation import DetectedCircle, apply_clahe_bgr
-from modules.classification import classify_by_color_and_size, ValeurPiece, VALEURS_CENTIMES
-from modules.classification2 import classify_hls, ValeurPieceHLS
-from modules.classification3 import classify_filtres, ValeurPieceFiltre
+from modules.segmentation import DetectedCircle
+from modules.classification import classify_by_color_and_size, VALEURS_CENTIMES
+from modules.classification3 import classify_filtres
 
 
 @dataclass(frozen=True)
@@ -27,128 +24,6 @@ class ValeurPieceCombinee:
     confiance: float
     groupe_couleur: str = ""
     methode_dominante: str = ""
-
-
-def _detecter_anneau_interne(image_bgr: np.ndarray, circle: DetectedCircle) -> float:
-    """Détecte la présence d'un anneau interne (signature bimétal) avec Canny + Hough.
-
-    Retourne un score entre 0 (pas d'anneau) et 1 (anneau net détecté).
-    Les pièces 1€/2€ ont une frontière visible entre centre et couronne.
-    """
-    cx, cy, r = circle.x, circle.y, circle.radius
-    r_ext = max(1, int(r * 0.92))
-
-    x1 = max(0, cx - r_ext)
-    y1 = max(0, cy - r_ext)
-    x2 = min(image_bgr.shape[1], cx + r_ext)
-    y2 = min(image_bgr.shape[0], cy + r_ext)
-
-    roi = image_bgr[y1:y2, x1:x2]
-    if roi.size == 0:
-        return 0.0
-
-    # Prétraitement
-    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-    gray = cv2.GaussianBlur(gray, (5, 5), 1.5)
-
-    # Canny pour détecter les contours internes
-    edges = cv2.Canny(gray, 30, 90)
-
-    # Masquer les bords extérieurs (on ne veut que les contours INTERNES)
-    lx, ly = cx - x1, cy - y1
-    mask_ext = np.zeros_like(edges)
-    cv2.circle(mask_ext, (lx, ly), int(r * 0.82), 255, -1)
-    cv2.circle(mask_ext, (lx, ly), int(r * 0.25), 0, -1)  # Ignorer le centre pur
-    edges_internes = cv2.bitwise_and(edges, mask_ext)
-
-    # Chercher un cercle interne avec Hough
-    # L'anneau bimétal est à environ 55-65% du rayon extérieur
-    r_min_anneau = int(r * 0.40)
-    r_max_anneau = int(r * 0.72)
-
-    circles_internes = cv2.HoughCircles(
-        edges_internes,
-        cv2.HOUGH_GRADIENT,
-        dp=1.5,
-        minDist=r,  # Un seul cercle attendu
-        param1=50,
-        param2=15,
-        minRadius=r_min_anneau,
-        maxRadius=r_max_anneau,
-    )
-
-    if circles_internes is None:
-        # Fallback : mesurer la densité de contours dans la zone annulaire
-        zone_anneau = np.zeros_like(edges, dtype=np.uint8)
-        cv2.circle(zone_anneau, (lx, ly), int(r * 0.68), 255, -1)
-        cv2.circle(zone_anneau, (lx, ly), int(r * 0.52), 0, -1)
-        pixels_zone = zone_anneau.sum() / 255
-        if pixels_zone < 10:
-            return 0.0
-        densite = float(cv2.bitwise_and(edges, zone_anneau).sum() / 255) / pixels_zone
-        # Une densité > 0.15 suggère un anneau
-        return float(np.clip(densite / 0.20, 0.0, 0.7))
-
-    # Cercle interne trouvé — vérifier qu'il est bien centré
-    det = circles_internes[0][0]
-    det_cx, det_cy, det_r = det[0], det[1], det[2]
-    dist_centre = np.hypot(det_cx - lx, det_cy - ly)
-
-    if dist_centre > r * 0.15:
-        return 0.2  # Cercle trouvé mais décentré → faible confiance
-
-    # Cercle bien centré et dans la bonne plage de rayon
-    ratio_r = det_r / r
-    if 0.45 <= ratio_r <= 0.70:
-        return 0.9
-    return 0.5
-
-
-def _profil_radial_contraste(image_bgr: np.ndarray, circle: DetectedCircle) -> float:
-    """Mesure la rupture de contraste radiale (bimétal = rupture nette centre/bord).
-
-    Retourne un score : élevé si rupture nette (bimétal probable).
-    """
-    cx, cy, r = circle.x, circle.y, circle.radius
-    r_ext = max(1, int(r * 0.85))
-
-    x1 = max(0, cx - r_ext)
-    y1 = max(0, cy - r_ext)
-    x2 = min(image_bgr.shape[1], cx + r_ext)
-    y2 = min(image_bgr.shape[0], cy + r_ext)
-
-    roi = image_bgr[y1:y2, x1:x2]
-    if roi.size == 0:
-        return 0.0
-
-    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY).astype(float)
-    lx, ly = cx - x1, cy - y1
-
-    # Échantillonner la luminosité à différents rayons
-    n_anneaux = 10
-    moyennes = []
-    for i in range(n_anneaux):
-        r_int = int(r * (i / n_anneaux) * 0.85)
-        r_out = int(r * ((i + 1) / n_anneaux) * 0.85)
-        mask = np.zeros_like(gray, dtype=np.uint8)
-        cv2.circle(mask, (lx, ly), max(1, r_out), 255, -1)
-        if r_int > 0:
-            cv2.circle(mask, (lx, ly), r_int, 0, -1)
-        pixels = gray[mask > 0]
-        if len(pixels) > 0:
-            moyennes.append(float(np.mean(pixels)))
-        else:
-            moyennes.append(0.0)
-
-    if len(moyennes) < 5:
-        return 0.0
-
-    # Calculer la dérivée du profil radial
-    diffs = [abs(moyennes[i + 1] - moyennes[i]) for i in range(len(moyennes) - 1)]
-    max_diff = max(diffs)
-
-    # Une rupture nette (>15 niveaux de gris) entre anneaux adjacents → bimétal
-    return float(np.clip(max_diff / 25.0, 0.0, 1.0))
 
 
 def _correct_white_balance(image_bgr: np.ndarray) -> np.ndarray:
@@ -178,9 +53,12 @@ def classify_combine(
     if not circles:
         return []
 
+    # Patch 2 : correction de balance des blancs avant classification
+    image_wb = _correct_white_balance(image_bgr)
+
     # HSV (avec HistEq intégré) et Filtres
-    results_hsv = classify_by_color_and_size(circles, image_bgr)
-    results_filtres = classify_filtres(circles, image_bgr)
+    results_hsv = classify_by_color_and_size(circles, image_wb)
+    results_filtres = classify_filtres(circles, image_wb)
 
     n = len(circles)
     resultats = []
@@ -189,13 +67,29 @@ def classify_combine(
         v_hsv = results_hsv[i] if i < len(results_hsv) else None
         v_filt = results_filtres[i] if i < len(results_filtres) else None
 
-        # Déterminer le groupe par vote
+        # Patch 1 : sélection par confiance (plus de règle binaire groupe)
+        # HSV est la méthode de base ; les Filtres peuvent prendre le dessus
+        # seulement si leur confiance est significativement plus haute.
         groupe_hsv = v_hsv.groupe_couleur if v_hsv else ""
         groupe_filt = v_filt.groupe_couleur if v_filt else ""
 
-        # Si les Filtres détectent cuivre → leur faire confiance
-        # Sinon → utiliser le HSV (meilleur sur or et bimétal)
-        if groupe_filt == "cuivre" and v_filt:
+        conf_hsv = v_hsv.confiance if v_hsv else 0.0
+        conf_filt = v_filt.confiance if v_filt else 0.0
+
+        # Les Filtres prennent le dessus si :
+        #   - même groupe que HSV ET confiance Filtres > HSV + 0.08
+        #   - OU groupe cuivre avec confiance Filtres nettement supérieure
+        use_filtres = (
+            v_filt is not None and v_hsv is not None
+            and groupe_filt == groupe_hsv
+            and conf_filt > conf_hsv + 0.08
+        ) or (
+            v_filt is not None
+            and groupe_filt == "cuivre"
+            and conf_filt > conf_hsv + 0.05
+        )
+
+        if use_filtres and v_filt:
             best_denom = v_filt.denomination
             best_conf = v_filt.confiance
             methode = "Filtres"
