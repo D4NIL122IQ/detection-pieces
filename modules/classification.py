@@ -365,10 +365,12 @@ def _score_couleur_intragroupe(desc: dict, groupe: str) -> dict[str, float]:
             score = _gauss(h, _CUIVRE_H_CENTERS[d], _INTRA_H_SIGMA) * _gauss(s, _CUIVRE_S_CENTERS[d], _INTRA_S_SIGMA)
             scores[d] = max(score, 1e-6)
         # LBP : surface plus texturée → pièce plus grande (5c > 2c > 1c)
+        # Seuil abaissé et poids augmentés pour une meilleure discrimination
         lbp_var = desc.get("lbp_var", 0.0)
-        lbp_rank = float(np.clip(lbp_var / 3000.0, 0.0, 1.0))
-        scores["5c"] *= (1.0 + 0.40 * lbp_rank)
-        scores["1c"] *= (1.0 + 0.40 * (1.0 - lbp_rank))
+        lbp_rank = float(np.clip(lbp_var / 2500.0, 0.0, 1.0))
+        scores["5c"] *= (1.0 + 0.65 * lbp_rank)
+        scores["2c"] *= (1.0 + 0.25 * (1.0 - abs(lbp_rank - 0.5) * 2.0))
+        scores["1c"] *= (1.0 + 0.55 * (1.0 - lbp_rank))
     elif groupe == "or":
         denoms = ["10c", "20c", "50c"]
         scores = {}

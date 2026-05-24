@@ -208,7 +208,7 @@ class EuroVisionApp:
 
         # Onglet Combiné
         tab_combine = ttk.Frame(self.notebook, padding=8)
-        self.notebook.add(tab_combine, text="Combiné (HSV+HLS+Canny)")
+        self.notebook.add(tab_combine, text="Combiné (HSV+Filtres+Bimétal)")
         tab_combine.columnconfigure(0, weight=1)
         tab_combine.rowconfigure(1, weight=1)
 

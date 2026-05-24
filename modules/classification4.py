@@ -33,6 +33,45 @@ class ValeurPieceCombinee:
     methode_dominante: str = ""
 
 
+def _hue_circular_std(image_bgr: np.ndarray, circle: DetectedCircle) -> float:
+    """Écart-type circulaire de la teinte HSV sur le disque de la pièce.
+
+    Un bimétal présente deux zones de couleur distinctes (argent + or) →
+    distribution bimodale de teinte → écart-type circulaire élevé (>30°).
+    Un monométal a une couleur uniforme → écart-type faible (<12°).
+
+    Retourne une valeur en degrés (0 = couleur parfaitement uniforme).
+    """
+    cx, cy, r = circle.x, circle.y, circle.radius
+    if r < 10:
+        return 0.0
+    h, w = image_bgr.shape[:2]
+    r_in = max(1, int(r * 0.88))
+    x1, y1 = max(0, cx - r_in), max(0, cy - r_in)
+    x2, y2 = min(w, cx + r_in), min(h, cy + r_in)
+    roi = image_bgr[y1:y2, x1:x2]
+    if roi.size == 0:
+        return 0.0
+    lx, ly = cx - x1, cy - y1
+    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+    mask = np.zeros(roi.shape[:2], dtype=np.uint8)
+    cv2.circle(mask, (lx, ly), r_in, 255, -1)
+    h_vals = hsv[:, :, 0][mask > 0].astype(np.float64)
+    s_vals = hsv[:, :, 1][mask > 0].astype(np.float64)
+    # Exclure les pixels peu saturés (gris/noir) dont la teinte est instable
+    sat_mask = s_vals > 35
+    if sat_mask.sum() < 30:
+        return 0.0
+    h_sat = h_vals[sat_mask]
+    # Variance circulaire : angles en [0, 2π], H OpenCV ∈ [0, 180] → *π/90
+    angles = h_sat * (np.pi / 90.0)
+    c_m = float(np.mean(np.cos(angles)))
+    s_m = float(np.mean(np.sin(angles)))
+    r_val = min(np.sqrt(c_m ** 2 + s_m ** 2), 1.0 - 1e-9)
+    # Écart-type circulaire en degrés
+    return float(np.sqrt(-2.0 * np.log(r_val)) * (90.0 / np.pi))
+
+
 def _bimetal_kmeans_score(
     image_bgr: np.ndarray,
     circle: DetectedCircle,
@@ -283,11 +322,13 @@ def classify_combine(
     bimetal_scores = [_bimetal_radial_profile_score(image_bgr, c) for c in circles]
     # K-means k=2 : score complémentaire de séparation des couleurs
     kmeans_scores = [_bimetal_kmeans_score(image_bgr, c) for c in circles]
-    # Fusion : score combiné = 0.7 * radial + 0.3 * kmeans
+    # Fusion : score combiné = 0.8 * radial + 0.2 * kmeans
     bimetal_scores = [
         (0.8 * s[0] + 0.2 * km, s[1])
         for s, km in zip(bimetal_scores, kmeans_scores)
     ]
+    # Écart-type circulaire de teinte : signal bimétal complémentaire
+    hue_std_scores = [_hue_circular_std(image_bgr, c) for c in circles]
 
     n = len(circles)
     resultats = []
@@ -302,6 +343,7 @@ def classify_combine(
         conf_filt = v_filt.confiance if v_filt else 0.0
 
         bi_score, bi_denom = bimetal_scores[i]
+        h_std = hue_std_scores[i]
 
         # Vote pondéré sur le groupe
         group_votes: dict[str, float] = {}
@@ -310,11 +352,20 @@ def classify_combine(
         if v_filt and groupe_filt:
             group_votes[groupe_filt] = group_votes.get(groupe_filt, 0.0) + conf_filt
 
-        # Le score bimétal centre/bord vote aussi
+        # Signal 1 : score bimétal radial + K-means
         if bi_score > 0.35:
             group_votes["bimetallic"] = group_votes.get("bimetallic", 0.0) + bi_score
         elif bi_score < 0.15:
-            group_votes["bimetallic"] = group_votes.get("bimetallic", 0.0) * 0.5
+            # Pénalité explicite — l'ancienne logique (* 0.5) ne fonctionnait
+            # pas quand bimetallic n'était pas encore dans group_votes (0.0 * 0.5 = 0)
+            group_votes["bimetallic"] = group_votes.get("bimetallic", 0.0) - 0.18
+
+        # Signal 2 : écart-type circulaire de teinte (grand = deux couleurs distinctes)
+        # Seuil positif élevé (38°) pour ne pas confondre avec les pièces or texturées
+        if h_std > 38.0:
+            group_votes["bimetallic"] = group_votes.get("bimetallic", 0.0) + min(0.35, h_std / 100.0)
+        elif h_std < 10.0:
+            group_votes["bimetallic"] = group_votes.get("bimetallic", 0.0) - 0.08
 
         if group_votes:
             groupe_elu = max(group_votes, key=lambda g: group_votes[g])

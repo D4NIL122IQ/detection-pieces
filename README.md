@@ -46,8 +46,8 @@ L'objectif initial était d'atteindre **70 % de précision** sur la détection. 
 | **Détection** | F1 | **82.64 %** | **83.21 %** |
 | **Détection** | Précision | 82.29 % | 84.86 % |
 | **Détection** | Rappel | 83.00 % | 81.62 % |
-| **Classification valeur (8 classes)** | F1 micro | 36.2 % | **37.2 %** |
-| **Classification valeur** | F1 macro | 36.1 % | **37.7 %** |
+| **Classification valeur (8 classes)** | F1 micro | 36.4 % | **37.5 %** |
+| **Classification valeur** | F1 macro | 36.8 % | **38.6 %** |
 
 ---
 
@@ -363,23 +363,23 @@ Cela corrige les classifications individuelles incohérentes en exploitant les c
 
 | Métrique | Train | Test |
 |---|---|---|
-| **F1 micro** | 36.2 % | **37.2 %** |
-| **F1 macro** | 36.1 % | **37.7 %** |
-| Précision | 36.0 % | 38.0 % |
-| Rappel | 36.3 % | 36.5 % |
+| **F1 micro** | 36.4 % | **37.5 %** |
+| **F1 macro** | 36.8 % | **38.6 %** |
+| Précision | 36.3 % | 38.2 % |
+| Rappel | 36.6 % | 36.8 % |
 
 **Détail par classe (test)** :
 
 | Classe | TP | Précision | Rappel | F1 |
 |---|---|---|---|---|
-| 1¢ | 17 | 68.0 % | 37.8 % | **48.6 %** |
-| 2¢ | 8 | 53.3 % | 32.0 % | 40.0 % |
-| 5¢ | 9 | 32.1 % | 29.0 % | 30.5 % |
-| 10¢ | 17 | 30.4 % | 25.0 % | 27.4 % |
-| 20¢ | 26 | 44.8 % | 25.5 % | 32.5 % |
-| 50¢ | 23 | 35.4 % | 44.2 % | 39.3 % |
-| 1€ | 20 | 27.0 % | 45.5 % | 33.9 % |
-| 2€ | 33 | 40.2 % | 63.5 % | **49.3 %** |
+| 1¢ | 17 | 65.4 % | 37.8 % | **47.9 %** |
+| 2¢ | 9 | 56.2 % | 36.0 % | 43.9 % |
+| 5¢ | 11 | 34.4 % | 35.5 % | 34.9 % |
+| 10¢ | 19 | 30.6 % | 27.9 % | 29.2 % |
+| 20¢ | 28 | 43.1 % | 27.5 % | 33.5 % |
+| 50¢ | 22 | 29.3 % | 42.3 % | 34.6 % |
+| 1€ | 18 | 32.7 % | 40.9 % | 36.4 % |
+| 2€ | 30 | 41.7 % | 57.7 % | **48.4 %** |
 
 ### Définitions
 
@@ -399,7 +399,7 @@ L'appariement est **greedy** : on associe en priorité le cercle détecté le pl
 ### Analyse
 
 - **Détection** : la précision est passée de 72 % à 82 % grâce au NMS par IoU, sans perte notable de rappel.
-- **Classification** : le score F1 a doublé par rapport à la version initiale (~18 % → 37 %), avec un gain particulièrement marqué sur les bimétaux (2€ à 49.3 %).
+- **Classification** : le score F1 a doublé par rapport à la version initiale (~18 % → 38.6 % macro), avec un gain particulièrement marqué sur les bimétaux (2€ à 48.4 %) et le cuivre (2¢ à 43.9 %, 5¢ à 34.9 %).
 - **Robustesse** : les performances sur la base test sont équivalentes voire supérieures à la base train → pas de sur-apprentissage.
 
 ---
@@ -562,4 +562,4 @@ python interface.py
 | Interface | Tkinter |
 | Dataset | 200 images train + 119 images test |
 | **Performances détection (test)** | **P 84.86 %, R 81.62 %, F1 83.21 %** |
-| **Performances classification (test)** | **F1 micro 37.2 %, F1 macro 37.7 %** |
+| **Performances classification (test)** | **F1 micro 37.5 %, F1 macro 38.6 %** |
